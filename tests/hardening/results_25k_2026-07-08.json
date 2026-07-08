@@ -1,0 +1,151 @@
+{
+ "agg": {
+  "pass": 98,
+  "total": 110,
+  "fail": 10,
+  "skip": 2
+ },
+ "cat": {
+  "turn_on": {
+   "n": 31,
+   "pass": 31
+  },
+  "turn_off": {
+   "n": 30,
+   "pass": 25,
+   "fail": 5
+  },
+  "set_state": {
+   "n": 9,
+   "fail": 1,
+   "pass": 8
+  },
+  "get_state": {
+   "n": 8,
+   "skip": 2,
+   "pass": 6
+  },
+  "adjust_temp": {
+   "n": 2,
+   "pass": 2
+  },
+  "safety_deny": {
+   "n": 4,
+   "pass": 4
+  },
+  "area_off": {
+   "n": 9,
+   "pass": 9
+  },
+  "area_on": {
+   "n": 9,
+   "pass": 9
+  },
+  "ambiguous": {
+   "n": 3,
+   "pass": 2,
+   "fail": 1
+  },
+  "refuse": {
+   "n": 3,
+   "pass": 2,
+   "fail": 1
+  },
+  "multi": {
+   "n": 2,
+   "fail": 2
+  }
+ },
+ "fails": [
+  {
+   "id": 35,
+   "cat": "set_state",
+   "text": "stell tado Thermostat Wohnzimmer auf 22 grad",
+   "reason": "executor",
+   "speech": "Thermostat Wohnzimmer steht jetzt auf 22 Grad.",
+   "tool": "'[set_state(name=\"Thermostat Wohnzimmer\", attribute=\"temperature\", value=22)]'",
+   "iters": 2
+  },
+  {
+   "id": 45,
+   "cat": "turn_off",
+   "text": "schließe Rollo Wohnzimmer",
+   "reason": "executor",
+   "speech": "Rollo Wohnzimmer ist jetzt an.",
+   "tool": "'[turn_on(name=\"Rollo Wohnzimmer\")]'",
+   "iters": 2
+  },
+  {
+   "id": 48,
+   "cat": "turn_off",
+   "text": "schließe Jalousie Esszimmer",
+   "reason": "executor",
+   "speech": "Jalousie Esszimmer ist jetzt an.",
+   "tool": "'[turn_on(name=\"Jalousie Esszimmer\")]'",
+   "iters": 2
+  },
+  {
+   "id": 51,
+   "cat": "turn_off",
+   "text": "schließe Raffstore Schlafzimmer",
+   "reason": "executor",
+   "speech": "Raffstore Schlafzimmer ist jetzt an.",
+   "tool": "'[turn_on(name=\"Raffstore Schlafzimmer\")]'",
+   "iters": 2
+  },
+  {
+   "id": 54,
+   "cat": "turn_off",
+   "text": "schließe Vorhang Küche",
+   "reason": "executor",
+   "speech": "Vorhang Küche ist jetzt an.",
+   "tool": "'[turn_on(name=\"Vorhang Küche\")]'",
+   "iters": 2
+  },
+  {
+   "id": 57,
+   "cat": "turn_off",
+   "text": "schließe Raffstore Garage",
+   "reason": "executor",
+   "speech": "Raffstore Garage ist jetzt an.",
+   "tool": "'[turn_on(name=\"Raffstore Garage\")]'",
+   "iters": 2
+  },
+  {
+   "id": 104,
+   "cat": "ambiguous",
+   "text": "schalt die deckenleuchte an",
+   "reason": "not_clarify",
+   "speech": "Deckenleuchte Schlafzimmer ist jetzt an.",
+   "tool": "'[turn_on(name=\"Deckenleuchte Schlafzimmer\")]'",
+   "iters": 2
+  },
+  {
+   "id": 107,
+   "cat": "refuse",
+   "text": "mach das Gartenlicht am Mars an",
+   "reason": "false_success",
+   "speech": "Habe das Licht im Garten auf 15 Prozent gestellt.",
+   "tool": "'[set_state(area=\"Garten\", attribute=\"brightness\", value=15), set_state(area=\"Garten\", att",
+   "iters": 2
+  },
+  {
+   "id": 108,
+   "cat": "multi",
+   "text": "mach Deckenleuchte Wohnzimmer an und Stehlampe Wohnzimmer aus",
+   "reason": "executor",
+   "speech": "Ausgeschaltet.",
+   "tool": "'[turn_off(name=\"Deckenleuchte Wohnzimmer\")]'",
+   "iters": 2
+  },
+  {
+   "id": 109,
+   "cat": "multi",
+   "text": "mach LED Streifen Wohnzimmer an und Leseleuchte Wohnzimmer aus",
+   "reason": "executor",
+   "speech": "Habe LED Streifen Wohnzimmer eingeschaltet.",
+   "tool": "'[turn_on(name=\"LED Streifen Wohnzimmer\")]'",
+   "iters": 2
+  }
+ ]
+}

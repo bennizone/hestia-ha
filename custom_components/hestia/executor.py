@@ -135,14 +135,8 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
 
     names = _names_of(exposure, eids)
     try:
-        if verb == "turn_on":
-            await hass.services.async_call("homeassistant", "turn_on",
-                                           {"entity_id": eids}, blocking=True, context=context)
-            return {"ok": True, "targets": names}
-        if verb == "turn_off":
-            await hass.services.async_call("homeassistant", "turn_off",
-                                           {"entity_id": eids}, blocking=True, context=context)
-            return {"ok": True, "targets": names}
+        if verb in ("turn_on", "turn_off"):
+            return await _turn(hass, verb, eids, names, exposure, context)
         if verb == "stop":
             return await _stop(hass, eids, names, exposure, context)
         if verb == "set_state":
@@ -156,6 +150,21 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
     # verbleibende Verben (run_routine/set_timer/control_media/announce/manage_list/control_vacuum)
     # sind bewusst DEFERRED (MVP) — ehrlich melden statt raten.
     return {"ok": False, "error": "not_controllable", "query": verb}
+
+
+async def _turn(hass, verb, eids, names, exposure, context) -> dict:
+    """turn_on/off domain-aware: Cover brauchen open_cover/close_cover (homeassistant.turn_on
+    lässt Cover unberührt — im Härtetest verifiziert). Rest via generisches homeassistant.turn_*."""
+    covers = [e for e in eids if exposure[e]["domain"] == "cover"]
+    others = [e for e in eids if exposure[e]["domain"] != "cover"]
+    if others:
+        await hass.services.async_call("homeassistant", verb, {"entity_id": others},
+                                       blocking=True, context=context)
+    if covers:
+        svc = "open_cover" if verb == "turn_on" else "close_cover"
+        await hass.services.async_call("cover", svc, {"entity_id": covers},
+                                       blocking=True, context=context)
+    return {"ok": True, "targets": names}
 
 
 async def _stop(hass, eids, names, exposure, context) -> dict:
