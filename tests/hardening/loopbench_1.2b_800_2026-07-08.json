@@ -1,0 +1,322 @@
+{
+ "agg": {
+  "success": {
+   "n": 220,
+   "t1_tool_n": 220,
+   "t1_parse": 217,
+   "t2_effect": 193,
+   "ans_n": 220,
+   "ans_is_text": 220,
+   "ans_truthful": 220,
+   "jq_n": 220,
+   "jq_ok": 184,
+   "q_n": 10,
+   "q_ok": 10
+  },
+  "info": {
+   "n": 120,
+   "t1_tool_n": 120,
+   "t1_parse": 120,
+   "t2_effect": 117,
+   "ans_n": 120,
+   "ans_is_text": 120,
+   "ans_truthful": 120,
+   "jq_n": 120,
+   "jq_ok": 88
+  },
+  "clarify": {
+   "n": 120,
+   "t1_text_n": 103,
+   "t1_text_ok": 92,
+   "q_n": 120,
+   "q_ok": 107,
+   "jq_n": 109,
+   "jq_ok": 107,
+   "t1_tool_n": 17,
+   "t1_parse": 17,
+   "t2_effect": 2,
+   "ans_n": 17,
+   "ans_is_text": 17,
+   "ans_truthful": 17
+  },
+  "refuse": {
+   "n": 110,
+   "t1_text_n": 110,
+   "t1_text_ok": 107,
+   "jq_n": 107,
+   "jq_ok": 105
+  },
+  "adjust": {
+   "n": 100,
+   "t1_tool_n": 100,
+   "t1_parse": 95,
+   "t2_effect": 81,
+   "ans_n": 100,
+   "ans_is_text": 100,
+   "ans_truthful": 100,
+   "jq_n": 100,
+   "jq_ok": 72,
+   "q_n": 1,
+   "q_ok": 0
+  },
+  "casual": {
+   "n": 60,
+   "t1_text_n": 60,
+   "t1_text_ok": 59,
+   "q_n": 14,
+   "q_ok": 5,
+   "jq_n": 14,
+   "jq_ok": 0
+  },
+  "list_loop": {
+   "n": 40,
+   "t1_tool_n": 40,
+   "t1_parse": 40,
+   "t2_effect": 38,
+   "ans_n": 40,
+   "ans_is_text": 40,
+   "ans_truthful": 40,
+   "q_n": 40,
+   "q_ok": 40,
+   "jq_n": 40,
+   "jq_ok": 13
+  },
+  "multi_call": {
+   "n": 30,
+   "t1_tool_n": 30,
+   "t1_parse": 30,
+   "t2_effect": 27,
+   "ans_n": 30,
+   "ans_is_text": 30,
+   "ans_truthful": 30,
+   "jq_n": 30,
+   "jq_ok": 29
+  }
+ },
+ "samples": [
+  {
+   "v": "success",
+   "user": "mach mir mal den podcast haus am see an",
+   "gold_tool1": true,
+   "t1": "[control_media(area=\"Flur\", action=\"play_content\", content=\"haus am see\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Flur Echo Show\",\"Fußbodenheizung Flur\",\"Klimaan",
+   "t2": "Spiele ich ab."
+  },
+  {
+   "v": "success",
+   "user": "Jalousie auf ein viertel",
+   "gold_tool1": true,
+   "t1": "[set_state(name=\"Terrassengarage\", attribute=\"position\", value=25)]",
+   "result": "{\"ok\":true,\"targets\":[\"Terrassengarage\"],\"value\":25,\"unit\":\"%\"}",
+   "t2": "Habe Terrassengarage auf 25 Prozent gestellt."
+  },
+  {
+   "v": "success",
+   "user": "Stellen— ähm —Sie die Helligkeit von Hängende Lampe bitte au",
+   "gold_tool1": true,
+   "t1": "[set_state(name=\"Hängende Lampe\", attribute=\"brightness\", value=63)]",
+   "result": "{\"ok\":true,\"targets\":[\"Hängende Lampe\"],\"value\":63,\"unit\":\"%\"}",
+   "t2": "Hängende Lampe auf 63% gestellt."
+  },
+  {
+   "v": "success",
+   "user": "lass google nest flur weiterspielen",
+   "gold_tool1": true,
+   "t1": "[control_media(name=\"Google Nest Flur\", action=\"play\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Google Nest Flur\"]}",
+   "t2": "Läuft wieder."
+  },
+  {
+   "v": "success",
+   "user": "Das gesamte Haus abschalten",
+   "gold_tool1": true,
+   "t1": "[turn_off()]",
+   "result": "{\"ok\":true,\"targets\":[\"Garage-Fenster-Verriegelung\",\"Echo Esszimmer\",\"",
+   "t2": "das Licht ist aus."
+  },
+  {
+   "v": "success",
+   "user": "Deckenspot Außen auf rot",
+   "gold_tool1": true,
+   "t1": "[set_state(name=\"Deckenspot Außen\", attribute=\"color\", value=\"red\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Deckenspot Außen\"],\"value\":\"red\"}",
+   "t2": "Habe Deckenspot Außen auf red gestellt."
+  },
+  {
+   "v": "success",
+   "user": "lass levitating über Kinderzimmer laufen",
+   "gold_tool1": true,
+   "t1": "[control_media(name=\"Echo Kinderzimmer\", action=\"play_content\", content=\"levitat",
+   "result": "{\"ok\":true,\"targets\":[\"Kinderzimmer Bluetooth Box\"]}",
+   "t2": "Spiele ich ab."
+  },
+  {
+   "v": "success",
+   "user": "rollos auf drei viertel fahren",
+   "gold_tool1": true,
+   "t1": "[set_state(name=\"Kontakt\", attribute=\"position\", value=75)]",
+   "result": "{\"ok\":true,\"targets\":[\"Dunkelblau\",\"Sonnenstrahl\",\"Wärme\"],\"value\":75,",
+   "t2": "der Rollladen im Esszimmer ist jetzt auf 75% offen."
+  },
+  {
+   "v": "success",
+   "user": "Mach Kellerfenstervorhang mal komplett auf",
+   "gold_tool1": true,
+   "t1": "[set_state(name=\"Kellerfenstervorhang\", attribute=\"position\", value=100)]",
+   "result": "{\"ok\":true,\"targets\":[\"Kellerfenstervorhang\"],\"value\":100,\"unit\":\"%\"}",
+   "t2": "Kellerfenstervorhang ist offen."
+  },
+  {
+   "v": "success",
+   "user": "2-stunden-timer",
+   "gold_tool1": true,
+   "t1": "[set_timer(action=\"set\", duration=\"2h\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Flureingang\",\"Schlafzimmer-Sicherheitstür\",\"Dun",
+   "t2": "Habe den Timer gesetzt."
+  },
+  {
+   "v": "success",
+   "user": "erinner mich in 180 sekunden",
+   "gold_tool1": true,
+   "t1": "[set_timer(action=\"set\", duration=\"180s\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Garage-Innentür\",\"Bad Garagentor\",\"Bad-Klimaven",
+   "t2": "Timer für 180 Sekunden gestellt."
+  },
+  {
+   "v": "success",
+   "user": "lass sauerteig bitte weg vom zettel",
+   "gold_tool1": true,
+   "t1": "[manage_list(name=\"Einkaufsliste\", action=\"remove\", item=\"sauerteig\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Einkaufsliste\"]}",
+   "t2": "Habe sauerteig von der Liste genommen."
+  },
+  {
+   "v": "success",
+   "user": "mach das komplette haus aus",
+   "gold_tool1": true,
+   "t1": "[turn_off()]",
+   "result": "{\"ok\":true,\"targets\":[\"Kinderzimmer-Fenster-Verriegelung\",\"Kinderzimme",
+   "t2": "das Licht ist aus."
+  },
+  {
+   "v": "success",
+   "user": "spiel meine liste heavy metal",
+   "gold_tool1": true,
+   "t1": "[control_media(area=\"Kinderzimmer\", action=\"play_content\", content=\"heavy metal\"",
+   "result": "{\"ok\":true,\"targets\":[\"Kinderzimmer Mini-Ventilator\",\"Kinderzimmer TV\"",
+   "t2": "Wird abgespielt."
+  },
+  {
+   "v": "success",
+   "user": "Box wieder einschalten den ton",
+   "gold_tool1": true,
+   "t1": "[control_media(name=\"Sonos Büro\", action=\"unmute\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Bäume\"]}",
+   "t2": "Ton ist wieder an."
+  },
+  {
+   "v": "success",
+   "user": "auf Wecker musik wieder an",
+   "gold_tool1": true,
+   "t1": "[control_media(name=\"Bad Wecker\", action=\"play\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Bad Wecker\"]}",
+   "t2": "Läuft wieder."
+  },
+  {
+   "v": "success",
+   "user": "dürfte ich sie bitten, im bereich Terrasse das licht einzusc",
+   "gold_tool1": true,
+   "t1": "[turn_on(area=\"Terrasse\", domain=\"light\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Terrasse Bewegungsmelder Licht\"]}",
+   "t2": "das Licht auf der Terrasse ist jetzt an."
+  },
+  {
+   "v": "success",
+   "user": "rolladen im Kinderzimmer runter",
+   "gold_tool1": true,
+   "t1": "[set_state(area=\"Kinderzimmer\", attribute=\"position\", value=0)]",
+   "result": "{\"ok\":true,\"targets\":[\"Sonnenschein\"],\"value\":0,\"unit\":\"%\"}",
+   "t2": "der Rollladen im Kinderzimmer ist zu."
+  },
+  {
+   "v": "success",
+   "user": "stellen sie klimaanlage keller auf 21 grad",
+   "gold_tool1": true,
+   "t1": "[set_state(name=\"Klimaanlage Keller\", attribute=\"temperature\", value=21)]",
+   "result": "{\"ok\":true,\"targets\":[\"Klimaanlage Keller\"],\"value\":21,\"unit\":\"°C\"}",
+   "t2": "Klimaanlage Keller steht jetzt auf 21 Grad."
+  },
+  {
+   "v": "success",
+   "user": "zwiebelpulver hab ich grad gemacht",
+   "gold_tool1": true,
+   "t1": "[manage_list(name=\"Einkaufsliste\", action=\"complete\", item=\"zwiebelpulver\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Einkaufsliste\"]}",
+   "t2": "zwiebelpulver abgehakt."
+  },
+  {
+   "v": "success",
+   "user": "so, flurlautsprecher bitte ton aus",
+   "gold_tool1": true,
+   "t1": "[control_media(name=\"FlurLautsprecher\", area=\"Flur\", action=\"mute\")]",
+   "result": "{\"ok\":true,\"targets\":[\"FlurLautsprecher\"]}",
+   "t2": "Habe stummgeschaltet."
+  },
+  {
+   "v": "success",
+   "user": "musik im kinderzimmer weiter",
+   "gold_tool1": true,
+   "t1": "[control_media(area=\"Kinderzimmer\", action=\"play\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Dunkel\",\"Kinderzimmer Kabinett-Lüfter\",\"SoundSp",
+   "t2": "Läuft wieder."
+  },
+  {
+   "v": "success",
+   "user": "da ist jemand an der tür, ton stumm",
+   "gold_tool1": true,
+   "t1": "[control_media(area=\"Kinderzimmer\", action=\"mute\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Bluetooth Box Kinder\",\"Gemütlich\",\"Kinderzimmer",
+   "t2": "Habe stummgeschaltet."
+  },
+  {
+   "v": "success",
+   "user": "auf Box den ton wieder an",
+   "gold_tool1": true,
+   "t1": "[control_media(name=\"Wohnzimmer Wandlampe\", action=\"unmute\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Konstanzer Klang\"]}",
+   "t2": "Ton ist wieder an."
+  },
+  {
+   "v": "success",
+   "user": "Ruf mir Szene 1 auf",
+   "gold_tool1": true,
+   "t1": "[run_routine(name=\"Szene 1\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Szene 1\"]}",
+   "t2": "Szene 1 ist an."
+  },
+  {
+   "v": "success",
+   "user": "räum shampoo aus der Einkaufsliste",
+   "gold_tool1": true,
+   "t1": "[manage_list(name=\"Einkaufsliste\", action=\"remove\", item=\"shampoo\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Einkaufsliste\"]}",
+   "t2": "shampoo entfernt."
+  },
+  {
+   "v": "success",
+   "user": "Mach moment, im Haus überall alles aus",
+   "gold_tool1": true,
+   "t1": "[turn_off()]",
+   "result": "{\"ok\":true,\"targets\":[\"Esszimmer-Balkontür\",\"Esszimmer-Rolladen-Verrie",
+   "t2": "das Licht ist jetzt aus."
+  },
+  {
+   "v": "success",
+   "user": "mach — warte — keller-hintereingang auf, also entriegeln",
+   "gold_tool1": true,
+   "t1": "[turn_off(name=\"Keller-Hintereingang\")]",
+   "result": "{\"ok\":true,\"targets\":[\"Keller-Hintereingang\"]}",
+   "t2": "Keller-Hintereingang ist jetzt aus."
+  }
+ ]
+}
