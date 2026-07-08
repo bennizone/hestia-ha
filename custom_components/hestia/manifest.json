@@ -1,0 +1,13 @@
+{
+  "domain": "hestia",
+  "name": "Hestia",
+  "version": "0.0.1",
+  "documentation": "https://forgejo.home.benni.zone:3000/benni/hestia-ha",
+  "issue_tracker": "https://forgejo.home.benni.zone:3000/benni/hestia-ha/issues",
+  "codeowners": ["@benni"],
+  "config_flow": true,
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "dependencies": ["conversation"],
+  "requirements": []
+}
