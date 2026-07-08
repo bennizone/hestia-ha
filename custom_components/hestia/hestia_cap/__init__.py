@@ -12,9 +12,11 @@ from .serialize import dumps, serialize_call
 from .house import House, Area, Entity
 from .render import (RENDER_VERSION, INSTRUCTIONS, render_house,
                      render_system_content, build_messages)
+from .chat_template import render_prompt, BOS_TOKEN, STOP
 
 __all__ = ["CAP_VERSION", "VERBS", "TOOL_CALL_START", "TOOL_CALL_END",
            "all_tool_defs", "tool_def", "build_grammar",
            "parse", "Call", "ParseResult", "dumps", "serialize_call",
            "House", "Area", "Entity", "RENDER_VERSION", "INSTRUCTIONS",
-           "render_house", "render_system_content", "build_messages"]
+           "render_house", "render_system_content", "build_messages",
+           "render_prompt", "BOS_TOKEN", "STOP"]
