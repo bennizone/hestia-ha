@@ -335,6 +335,7 @@ def run(cases, limit):
     agg = collections.Counter()
     cat = collections.defaultdict(lambda: collections.Counter())
     fails = []
+    latencies = []
     for c in cases:
         for s in c["setup"]:
             dom, svc, eid = s[0], s[1], s[2]
@@ -345,10 +346,12 @@ def run(cases, limit):
         if c["setup"]:
             time.sleep(0.25)   # State setzen lassen
         logf.seek(0, 2); off = logf.tell()
+        _t0 = time.time()
         try:
             speech = converse(c["text"])
         except Exception as e:
             speech = f"<ERROR {e}>"
+        latencies.append((time.time() - _t0) * 1000)   # ms, End-to-End (voller Loop)
         logf.seek(off)
         trace = read_trace(logf)
         ok, reason = evaluate(c, speech, trace)
@@ -375,6 +378,13 @@ def run(cases, limit):
     denom = agg['total'] - agg['skip']
     print(f"{'-'*70}\nGESAMT: {agg['pass']}/{denom} = {100*agg['pass']/denom:.1f}%  (skip={agg['skip']})")
 
+    if latencies:
+        ls = sorted(latencies)
+        def pctl(p): return ls[min(len(ls) - 1, int(len(ls) * p))]
+        print(f"\nLATENZ end-to-end (voller Loop, ms): "
+              f"p50={pctl(0.5):.0f} p90={pctl(0.9):.0f} p95={pctl(0.95):.0f} "
+              f"max={ls[-1]:.0f} avg={sum(ls)/len(ls):.0f}")
+
     rc = collections.Counter(f["reason"] for f in fails)
     print(f"\nFEHLER-KLASSIFIKATION (Modell vs. Integration):")
     for r, n in rc.most_common():
@@ -384,7 +394,8 @@ def run(cases, limit):
         print(f"  [{f['cat']}/{f['reason']}] {f['text']!r}\n      tool={f['tool']!r} → {f['speech']!r}")
 
     out = os.path.expanduser("~/hardening_results.json")
-    json.dump({"agg": dict(agg), "cat": {k: dict(v) for k, v in cat.items()}, "fails": fails},
+    json.dump({"agg": dict(agg), "cat": {k: dict(v) for k, v in cat.items()},
+               "fails": fails, "latencies_ms": sorted(latencies)},
               open(out, "w"), ensure_ascii=False, indent=1)
     print(f"\n→ {out}")
 
