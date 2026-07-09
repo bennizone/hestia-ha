@@ -27,6 +27,7 @@ from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_EXPOSURE, CONF
                     DEFAULT_LOOP_DEPTH, DEFAULT_DENY, LOOP_EXHAUSTED_TEXTS)
 from .hestia_cap import (TOOL_CALL_START, STOP, all_tool_defs, parse, render_prompt,
                          render_system_content)
+from .hestia_cap import result as R
 from .house_builder import build_exposure, build_house
 from .executor import execute_calls
 
@@ -121,7 +122,7 @@ class HestiaAgent(conversation.ConversationEntity):
             if _looks_like_tool(text):
                 parsed = parse(text)
                 if not parsed.ok:
-                    result = '{"ok":false,"error":"unparseable"}'
+                    result = json.dumps(R.err_unparseable(), ensure_ascii=False, separators=(",", ":"))
                 else:
                     result = await execute_calls(self.hass, parsed, exposure,
                                                  user_input.context, self._deny)

@@ -5,135 +5,59 @@ Der native Kern des Loops: geparste cap-v2-Calls (hestia_cap.Call) gegen HAs Reg
 bauen — mit handlungsleitenden Fehlern (did_you_mean/candidates/allowed), damit das LLM
 self-correcten oder geerdet zurückfragen kann.
 
+**Result-Shaping/Resolver/Error-Builder leben NICHT hier, sondern in `hestia_cap.result`**
+(geteilt mit dem Trainings-Generator → kein train≠serve auf dem Tool-JSON, Audit 2026-07-09).
+Diese Datei ist reine SERVE-Orchestrierung: resolve → deny → read-before → HA-service_call →
+read-after → shape. Die HA-Primitive (`hass.services.async_call`, `hass.states.get`,
+`dt_util.now`) bleiben hier; sie speisen das Result nie direkt.
+
 Resolver ist MVP (exakt/normalisiert + difflib-did_you_mean); area-gewichtetes rapidfuzz = F1.
 Multi-Call (>1 Call in einem Turn) → sequenziell ausgeführt, EIN aggregiertes Result (§6.3).
 """
 from __future__ import annotations
 
-import difflib
 import json
 import logging
 
 from homeassistant.core import HomeAssistant, Context
 
-from .hestia_cap.schema import COLOR_WORDS
+from .hestia_cap import result as R
 
 _LOGGER = logging.getLogger(__name__)
 
-# Attribut → zuständige Domain (für set_state/adjust ohne explizites domain-Filter):
-# „stell die Heizung im Schlafzimmer auf 20" darf NUR climate treffen, nicht TVs/Lichter/Lüfter.
-_ATTR_DOMAIN = {"temperature": "climate", "brightness": "light", "color": "light",
-                "color_temp": "light", "volume": "media_player", "position": "cover",
-                "fan_speed": "fan"}
 
-# amount-Enum → Schrittweite (pct-Verben) bzw. Grad-Delta (temperature)
-_STEP_PCT = {"a_little": 10, "some": 25, "a_lot": 50}
-_STEP_DEG = {"a_little": 0.5, "some": 1.0, "a_lot": 2.0}
-_KELVIN = {"warm": 2700, "cool": 6500}
-
-
-def _norm(s) -> str:
-    return (s or "").strip().casefold()
-
-
-def _cap3(names: list[str]) -> list[str]:
-    return names[:3]
-
-
-def _names_of(exposure: dict, eids: list[str]) -> list[str]:
-    return [exposure[e]["llm_name"] for e in eids if e in exposure]
-
-
-# ── Resolution ──────────────────────────────────────────────────────────────
-def resolve(args: dict, exposure: dict) -> tuple[list[str] | None, dict | None]:
-    """Ziel-Block → (entity_ids, None) ODER (None, fehler-dict).
-
-    name → exakter/aliaser Match (fuzzy did_you_mean bei Fehlschlag); sonst area/floor/domain
-    als Gruppen-Filter. ref/leerer Ziel-Block wird MVP nicht aufgelöst (no_targets)."""
-    name = args.get("name")
-    area, floor, domain = args.get("area"), args.get("floor"), args.get("domain")
-
-    pool = []
-    for eid, rec in exposure.items():
-        if domain and rec["domain"] != domain:
-            continue
-        if area and _norm(rec.get("area")) != _norm(area):
-            continue
-        if floor and _norm(rec.get("floor")) != _norm(floor):
-            continue
-        pool.append((eid, rec))
-
-    if name:
-        nn = _norm(name)
-        exact = [(eid, rec) for eid, rec in pool
-                 if _norm(rec["llm_name"]) == nn or any(_norm(a) == nn for a in rec["aliases"])]
-        if len(exact) == 1:
-            return [exact[0][0]], None
-        if len(exact) > 1:
-            areas = sorted({r.get("area") or "" for _, r in exact if r.get("area")})
-            if len(exact) > 3 and len(areas) > 1:
-                return None, {"ok": False, "error": "ambiguous",
-                              "count": len(exact), "areas": _cap3(areas)}
-            return None, {"ok": False, "error": "ambiguous",
-                          "candidates": _cap3([r["llm_name"] for _, r in exact])}
-        # kein exakter Treffer → fuzzy-Hinweis über ALLE exponierten Namen
-        allnames = [rec["llm_name"] for rec in exposure.values()]
-        dym = difflib.get_close_matches(name, allnames, n=3, cutoff=0.5)
-        err = {"ok": False, "error": "entity_not_found", "query": name}
-        if dym:
-            err["did_you_mean"] = dym
-        return None, err
-
-    # kein name → Gruppen-Aktion über Filter
-    if not (area or floor or domain):
-        return None, {"ok": False, "error": "no_targets", "query": ""}
-    if not pool:
-        return None, {"ok": False, "error": "no_targets", "query": area or floor or domain}
-    return [eid for eid, _ in pool], None
-
-
-# ── Wert-Helfer ───────────────────────────────────────────────────────────────
-def _pct(v, lo=0):
-    if v == "max":
-        return 100
-    if v == "min":
-        return lo
-    return int(v)
-
-
-def _step(amount, table, default_key="some"):
-    if isinstance(amount, (int, float)):
-        return float(amount)
-    return table.get(amount, table[default_key])
+def _state_read(hass: HomeAssistant, eid: str) -> dict | None:
+    """HA-State → StateProvider-Form {state, attributes} (oder None)."""
+    st = hass.states.get(eid)
+    if st is None:
+        return None
+    return {"state": st.state, "attributes": dict(st.attributes)}
 
 
 # ── Einzel-Call ausführen ─────────────────────────────────────────────────────
 async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
-                    deny: list[str]) -> dict:
+                    deny: list) -> dict:
     verb, args = call.verb, call.args
 
     if verb == "get_state":
         return await _get_state(hass, args, exposure)
 
-    # ab hier: mutierende / Aktions-Verben → Ziel auflösen
-    eids, err = resolve(args, exposure)
+    # ab hier: mutierende / Aktions-Verben → Ziel auflösen (geteilter Resolver)
+    eids, err = R.resolve(args, exposure)
     if err:
         return err
 
     # set_state/adjust ohne explizites domain → auf die vom Attribut implizierte Domain einengen
     if verb in ("set_state", "adjust") and "domain" not in args:
-        dom = _ATTR_DOMAIN.get(args.get("attribute"))
-        if dom:
-            narrowed = [e for e in eids if exposure[e]["domain"] == dom]
-            if not narrowed:
-                return {"ok": False, "error": "no_targets", "query": args.get("attribute")}
-            eids = narrowed
+        eids, err = R.narrow_by_attr_domain(eids, args.get("attribute"), exposure)
+        if err:
+            return err
 
     # Safety-Deny (Schloss/Alarm) — kein Service-Call
     if any(exposure[e]["domain"] in deny for e in eids):
-        return {"ok": False, "error": "unsafe", "query": args.get("name") or args.get("domain") or ""}
+        return R.err_unsafe(args.get("name") or args.get("domain") or "")
 
-    names = _names_of(exposure, eids)
+    names = R.names_of(exposure, eids)
     try:
         if verb in ("turn_on", "turn_off"):
             return await _turn(hass, verb, eids, names, exposure, context)
@@ -142,14 +66,14 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
         if verb == "set_state":
             return await _set_state(hass, eids, names, args, context)
         if verb == "adjust":
-            return await _adjust(hass, eids, names, args, exposure, context)
+            return await _adjust(hass, eids, names, args, context)
     except Exception as e:  # noqa: BLE001 — HA-Service-Fehler → ehrliches Result, kein Crash
         _LOGGER.warning("Hestia executor %s failed: %s", verb, e)
-        return {"ok": False, "error": "timeout", "query": args.get("name") or args.get("domain") or ""}
+        return R.err_timeout(args.get("name") or args.get("domain") or "")
 
     # verbleibende Verben (run_routine/set_timer/control_media/announce/manage_list/control_vacuum)
     # sind bewusst DEFERRED (MVP) — ehrlich melden statt raten.
-    return {"ok": False, "error": "not_controllable", "query": verb}
+    return R.err_not_controllable(verb)
 
 
 async def _turn(hass, verb, eids, names, exposure, context) -> dict:
@@ -164,7 +88,7 @@ async def _turn(hass, verb, eids, names, exposure, context) -> dict:
         svc = "open_cover" if verb == "turn_on" else "close_cover"
         await hass.services.async_call("cover", svc, {"entity_id": covers},
                                        blocking=True, context=context)
-    return {"ok": True, "targets": names}
+    return R.shape_turn(names)
 
 
 async def _stop(hass, eids, names, exposure, context) -> dict:
@@ -176,92 +100,74 @@ async def _stop(hass, eids, names, exposure, context) -> dict:
         elif dom == "vacuum":
             await hass.services.async_call("vacuum", "stop", {"entity_id": eid},
                                            blocking=True, context=context)
-    return {"ok": True, "targets": names}
+    return R.shape_turn(names)
 
 
 async def _set_state(hass, eids, names, args, context) -> dict:
     attr, val = args["attribute"], args["value"]
+    canon, unit, err = R.set_value_or_error(attr, val)   # zentrale Wert-Semantik (B3/invalid_value)
+    if err:
+        return err
+    # Service-Dispatch: HA-spezifisch, aus (attr, canon) abgeleitet. Nur implementierte Attribute;
+    # neue Attribute (hvac_mode/preset/lock/alarm/oscillate/tilt/humidity/value/effect/option) sind
+    # serve-seitig DEFERRED (Executor-Branches = Phase 1b/3) → ehrlich not_controllable.
     if attr == "brightness":
         await hass.services.async_call("light", "turn_on",
-                                       {"entity_id": eids, "brightness_pct": _pct(val, lo=1)},
+                                       {"entity_id": eids, "brightness_pct": canon},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names, "value": _pct(val, lo=1), "unit": "%"}
-    if attr == "volume":
+    elif attr == "volume":
         await hass.services.async_call("media_player", "volume_set",
-                                       {"entity_id": eids, "volume_level": _pct(val) / 100},
+                                       {"entity_id": eids, "volume_level": canon / 100},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names, "value": _pct(val), "unit": "%"}
-    if attr == "position":
+    elif attr == "position":
         await hass.services.async_call("cover", "set_cover_position",
-                                       {"entity_id": eids, "position": _pct(val)},
+                                       {"entity_id": eids, "position": canon},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names, "value": _pct(val), "unit": "%"}
-    if attr == "fan_speed":
+    elif attr == "fan_speed":
         await hass.services.async_call("fan", "set_percentage",
-                                       {"entity_id": eids, "percentage": _pct(val)},
+                                       {"entity_id": eids, "percentage": canon},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names, "value": _pct(val), "unit": "%"}
-    if attr == "temperature":
+    elif attr == "temperature":
         await hass.services.async_call("climate", "set_temperature",
-                                       {"entity_id": eids, "temperature": float(val)},
+                                       {"entity_id": eids, "temperature": float(canon)},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names, "value": float(val), "unit": "°C"}
-    if attr == "color":
-        if val not in COLOR_WORDS:
-            return {"ok": False, "error": "invalid_value", "param": "color",
-                    "given": val, "allowed": list(COLOR_WORDS)}
+    elif attr == "color":
         await hass.services.async_call("light", "turn_on",
-                                       {"entity_id": eids, "color_name": val.replace("_", "")},
+                                       {"entity_id": eids, "color_name": canon.replace("_", "")},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names, "value": val}
-    if attr == "color_temp":
-        kelvin = _KELVIN.get(val, val if isinstance(val, (int, float)) else None)
-        if kelvin is None:
-            return {"ok": False, "error": "invalid_value", "param": "color_temp",
-                    "given": val, "allowed": ["warm", "cool", "<kelvin>"]}
+    elif attr == "color_temp":
         await hass.services.async_call("light", "turn_on",
-                                       {"entity_id": eids, "color_temp_kelvin": int(kelvin)},
+                                       {"entity_id": eids, "color_temp_kelvin": int(canon)},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names, "value": int(kelvin), "unit": "K"}
-    return {"ok": False, "error": "not_controllable", "query": attr}
+    else:
+        return R.err_not_controllable(attr)
+    return R.shape_set_state(names, canon, unit)
 
 
-def _adj_read(st, attr):
-    """(wert, unit) des adjust-relevanten Attributs — für Vorher/Nachher-Echo."""
-    a = st.attributes
-    if attr == "brightness":
-        b = a.get("brightness")
-        return (round(b / 255 * 100) if b is not None else None, "%")
-    if attr == "volume":
-        v = a.get("volume_level")
-        return (round(v * 100) if v is not None else None, "%")
-    if attr == "temperature":
-        return (a.get("temperature"), "°C")
-    if attr == "position":
-        return (a.get("current_position"), "%")
-    return (None, None)
-
-
-async def _adjust(hass, eids, names, args, exposure, context) -> dict:
-    """Relatives Verstellen. Echot den RESULTIERENDEN Wert zurück (Vorher/Nachher-Read), damit die
-    Antwort ihn truthful zitieren kann; `at_limit` wenn schon am Anschlag (kein Effekt)."""
+async def _adjust(hass, eids, names, args, context) -> dict:
+    """Relatives Verstellen. Echot den RESULTIERENDEN Wert zurück (Vorher/Nachher-Read via
+    result.adj_read), damit die Antwort ihn truthful zitieren kann; at_limit-Logik = shape_adjust."""
     attr = args["attribute"]
     direction = args.get("direction", "up")
-    sign = 1 if direction == "up" else -1
     amount = args.get("amount", "some")
-    before = {e: (_adj_read(hass.states.get(e), attr)[0] if hass.states.get(e) else None) for e in eids}
+    unit = None
+    before = {}
+    for e in eids:
+        v, u = R.adj_read(_state_read(hass, e), attr)
+        before[e] = v
+        unit = unit or u
 
     if attr == "brightness":
-        step = int(sign * _step(amount, _STEP_PCT))
+        step = int(R.adjust_delta("brightness", amount, direction))
         await hass.services.async_call("light", "turn_on",
                                        {"entity_id": eids, "brightness_step_pct": step},
                                        blocking=True, context=context)
     elif attr == "volume":
-        svc = "volume_up" if sign > 0 else "volume_down"
+        svc = "volume_up" if direction == "up" else "volume_down"
         await hass.services.async_call("media_player", svc, {"entity_id": eids},
                                        blocking=True, context=context)
     elif attr in ("temperature", "position"):
-        delta = sign * (_step(amount, _STEP_DEG) if attr == "temperature" else _step(amount, _STEP_PCT))
+        delta = R.adjust_delta(attr, amount, direction)
         for eid in eids:
             cur = before.get(eid)
             if cur is None:
@@ -275,101 +181,42 @@ async def _adjust(hass, eids, names, args, exposure, context) -> dict:
                                                {"entity_id": eid, "position": max(0, min(100, int(cur + delta)))},
                                                blocking=True, context=context)
     else:
-        return {"ok": False, "error": "not_controllable", "query": attr}
+        return R.err_not_controllable(attr)
 
-    out = {"ok": True, "targets": names}
-    # Wert-Echo nur bei EINDEUTIGEM Einzelziel (Gruppe → mehrdeutig, nur targets)
-    if len(eids) == 1:
-        st = hass.states.get(eids[0])
-        val, unit = _adj_read(st, attr) if st else (None, None)
-        if val is not None:
-            out["value"] = val
-            if unit:
-                out["unit"] = unit
-            if before.get(eids[0]) is not None and val == before[eids[0]]:
-                out["at_limit"] = True      # kein Effekt → schon am Anschlag ("bereits am Minimum")
-    return out
+    after = {e: R.adj_read(_state_read(hass, e), attr)[0] for e in eids}
+    return R.shape_adjust(names, before, after, eids, unit)
 
 
 # ── get_state (Read-Verb, bleibt im Loop) ─────────────────────────────────────
-_ON_STATES = {"on", "open", "home", "playing", "unlocked", "heat", "cool", "auto"}
-
-
 async def _get_state(hass, args, exposure) -> dict:
     attr = args.get("attribute")
     aggregate = args.get("aggregate")
 
     if attr == "datetime":
         from homeassistant.util import dt as dt_util
-        now = dt_util.now()
-        return {"ok": True, "reading": {"attribute": "datetime",
-                                        "date": now.strftime("%Y-%m-%d"),
-                                        "time": now.strftime("%H:%M"),
-                                        "weekday": now.strftime("%A")}}
+        return R.shape_datetime(dt_util.now())
 
-    eids, err = resolve(args, exposure)
+    eids, err = R.resolve(args, exposure)
     if err:
-        # get_state-Fehler: entity_not_found bleibt, no_targets → no_data-ish
         return err
-    if not eids:
-        return {"ok": False, "error": "no_data", "query": args.get("name") or ""}
 
-    if aggregate == "count":
-        return {"ok": True, "aggregate": "count", "value": len(eids)}
-
-    readings = []
-    numeric = []
-    on_flags = []
+    reads = []
     for eid in eids:
-        st = hass.states.get(eid)
-        if not st:
+        read = _state_read(hass, eid)
+        if read is None:
             continue
-        name = exposure[eid]["llm_name"]
-        val, unit, a = _read_attr(st, attr)
-        readings.append({"name": name, "attribute": a, "value": val,
-                         **({"unit": unit} if unit else {})})
-        if isinstance(val, (int, float)):
-            numeric.append(val)
-        on_flags.append(str(st.state).lower() in _ON_STATES)
+        read["name"] = exposure[eid]["llm_name"]
+        reads.append(read)
 
-    if aggregate in ("any", "all"):
-        v = (any(on_flags) if aggregate == "any" else all(on_flags))
-        detail = [readings[i]["name"] for i, f in enumerate(on_flags) if f != v]
-        out = {"ok": True, "aggregate": aggregate, "value": v}
-        if detail:
-            out["detail"] = detail[:3]
-        return out
-    if aggregate in ("avg", "min", "max") and numeric:
-        agg = (sum(numeric) / len(numeric) if aggregate == "avg"
-               else min(numeric) if aggregate == "min" else max(numeric))
-        return {"ok": True, "aggregate": aggregate, "value": round(agg, 1)}
-
-    if not readings:
-        return {"ok": False, "error": "no_data", "query": args.get("name") or ""}
-    return {"ok": True, "readings": readings}
-
-
-def _read_attr(st, attr):
-    """(value, unit, effektives-attribut) für eine Entität + gefragtes Attribut."""
-    a = st.attributes
-    if attr in (None, "state"):
-        return st.state, None, "state"
-    if attr == "temperature":
-        v = a.get("temperature", a.get("current_temperature"))
-        return v, "°C", "temperature"
-    if attr == "brightness":
-        b = a.get("brightness")
-        return (round(b / 255 * 100) if b is not None else None), "%", "brightness"
-    if attr == "position":
-        return a.get("current_position"), "%", "position"
-    if attr == "open":
-        return (st.state == "open"), None, "open"
-    return st.state, None, "state"
+    res = R.shape_get_state(attr, aggregate, reads)
+    if res.get("error") == "no_data":   # query erden (Serve-Parität)
+        res["query"] = args.get("name") or ""
+    return res
 
 
 # ── Öffentlicher Einstieg ─────────────────────────────────────────────────────
 async def execute_calls(hass: HomeAssistant, parsed, exposure: dict,
-                        context: Context, deny: list[str]) -> str:
+                        context: Context, deny: list) -> str:
     """ParseResult → rev2-Result-JSON-String (kompakt). Single-Call = reiches Einzel-Result;
     Multi-Call = sequenziell + EIN aggregiertes {ok,targets[,failed]}."""
     calls = parsed.calls
@@ -388,8 +235,5 @@ async def execute_calls(hass: HomeAssistant, parsed, exposure: dict,
             targets += r.get("targets", [])
             q = r.get("query") or (r.get("candidates") or ["?"])[0]
             failed.append({"name": q, "error": r.get("error", "failed")})
-    if ok:
-        res = {"ok": True, "targets": targets}
-    else:
-        res = {"ok": False, "targets": targets, "failed": failed}
+    res = {"ok": True, "targets": targets} if ok else {"ok": False, "targets": targets, "failed": failed}
     return json.dumps(res, ensure_ascii=False, separators=(",", ":"))
