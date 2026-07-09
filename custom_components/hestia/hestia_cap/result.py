@@ -272,8 +272,15 @@ def read_attr(read: dict, attr) -> tuple:
     if attr in (None, "state"):
         return state, None, "state"
     if attr == "temperature":
+        # climate trägt den Wert in attributes.temperature/current_temperature; ein Temperatur-
+        # SENSOR trägt ihn im state (attributes = uom/device_class). Beide Formen lesen.
         v = a.get("temperature", a.get("current_temperature"))
-        return _num(v) if isinstance(v, float) else v, "°C", "temperature"
+        if v is None and state not in (None, "", "unavailable", "unknown"):
+            try:
+                v = float(state)
+            except (TypeError, ValueError):
+                v = None
+        return _num(v) if isinstance(v, float) else v, a.get("unit_of_measurement", "°C"), "temperature"
     if attr == "brightness":
         b = a.get("brightness")
         return (round(b / 255 * 100) if b is not None else None), "%", "brightness"
