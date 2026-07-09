@@ -65,6 +65,12 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
         if err:
             return err
 
+    # Gruppen-turn ohne Name/Domain → read-only Domains (Sensoren/Wetter) raus (H6)
+    if verb in ("turn_on", "turn_off") and "name" not in args:
+        eids, err = R.strip_readonly_for_turn(eids, exposure)
+        if err:
+            return err
+
     # Safety-Deny (Schloss/Alarm) — kein Service-Call
     if any(exposure[e]["domain"] in deny for e in eids):
         return R.err_unsafe(args.get("name") or args.get("domain") or "")

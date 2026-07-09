@@ -187,6 +187,19 @@ def resolve(args: dict, exposure: dict) -> tuple:
     return [eid for eid, _ in pool], None
 
 
+# Read-only Domains ohne on/off-Semantik: dürfen NIE Ziel eines Gruppen-turn_on/off sein (H6).
+_TURN_READONLY = ("sensor", "binary_sensor", "weather")
+
+
+def strip_readonly_for_turn(eids: list, exposure: dict):
+    """Gruppen-turn_on/off ohne Domain löst den GANZEN Raum auf → Sensoren/Wetter (read-only) raus,
+    sonst erschiene ein Sensor als „eingeschaltet" (train≠serve-Wurzel H6). (eids, None) | (None, err)."""
+    keep = [e for e in eids if exposure[e]["domain"] not in _TURN_READONLY]
+    if not keep:
+        return None, err_no_targets("")
+    return keep, None
+
+
 def narrow_by_attr_domain(eids: list, attr, exposure: dict):
     """set_state/adjust ohne explizites domain → auf die vom Attribut implizierte Domain einengen.
     Liefert (eids, None) oder (None, no_targets-err)."""
