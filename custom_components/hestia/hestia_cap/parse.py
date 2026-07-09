@@ -85,7 +85,8 @@ def _validate_call(verb: str, args: dict) -> list:
 
 
 def _check_set_value(attr: str, val) -> list:
-    kind = SETTABLE_ATTRS.get(attr, {}).get("kind")
+    spec = SETTABLE_ATTRS.get(attr, {})
+    kind = spec.get("kind")
     if kind == "pct":
         if isinstance(val, str) and val in ("max", "min"):
             return []
@@ -94,7 +95,12 @@ def _check_set_value(attr: str, val) -> list:
         return [f"set_state: {attr} value {val!r} not 0..100|max|min"]
     if kind == "number":
         return [] if isinstance(val, (int, float)) else [f"set_state: {attr} value must be number"]
-    # colorword/colortemp: string erlaubt (weiche Prüfung — Executor mappt)
+    if kind == "words":
+        vals = spec["values"]
+        return [] if (isinstance(val, str) and val in vals) else [f"set_state: {attr} value {val!r} not in {vals}"]
+    if kind == "str":
+        return [] if isinstance(val, str) else [f"set_state: {attr} value must be string"]
+    # colorword/colortemp: string erlaubt (weiche Prüfung — Executor mappt/liefert invalid_value+allowed, H5)
     return []
 
 

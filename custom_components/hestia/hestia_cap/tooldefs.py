@@ -21,15 +21,17 @@ DESCRIPTIONS = {
     "manage_list": "Verwaltet eine Einkaufs-/To-do-Liste (Eintrag hinzufügen/entfernen/abhaken).",
     "control_vacuum": "Steuert den Staubsauger-Roboter (starten, zur Basis zurück, Bereich reinigen).",
     "stop": "Hält eine laufende Bewegung an (Rollladen/Jalousie stoppen, Roboter anhalten).",
+    "help": "Fragt Fähigkeiten/verfügbare Attribute ab, wenn unklar ist, was steuer-/abfragbar ist.",
     # cap-v2: ask/decline/respond gestrichen — Rückfrage/Ablehnung/Smalltalk laufen als freier Antworttext.
 }
 PARAM_DESC = {
-    "value": "Zahl (Skalar), 'max', 'min' oder Farbwort — Typ folgt aus attribute.",
+    "value": "Wert passend zum attribute: Zahl/'max'/'min' (Prozent, Grad), Farbwort, oder Modus/Zustand (z.B. heat, locked, on).",
     "duration": "z.B. '10min', '1h30min' (bei set/add/subtract).",
     "name": "Eigenname der Entität/Routine/Liste, wortwörtlich aus der Äusserung.",
-    "content": "Titel/Sender/Playlist bei play_content.",
+    "content": "Titel/Sender/Playlist bei play_content, oder Quellenname bei action=source.",
     "message": "Die Durchsage-Nachricht in natürlicher Sprache.",
     "item": "Der Listen-Eintrag (z.B. 'Milch').",
+    "topic": "Optionales Stichwort, wonach gefragt wird (Gerät/Attribut/Fähigkeit).",
 }
 
 

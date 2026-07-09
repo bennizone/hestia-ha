@@ -15,7 +15,7 @@ wird von llama.cpp direkt erfüllt (keine Lazy-/Trigger-Grammar nötig), 0/500 m
 """
 from __future__ import annotations
 from .schema import (VERBS, TARGET_PARAMS, TOOL_CALL_START, TOOL_CALL_END,
-                     SETTABLE_ATTRS, COLOR_WORDS, COLOR_TEMP_WORDS)
+                     settable_value_words, settable_allows_free_str)
 
 
 def _gbnf_str_literal(s: str) -> str:
@@ -37,15 +37,18 @@ def _value_rule_for(spec: dict) -> str:
             alts += " | num"
         return alts
     if t == "value":
-        # cap-v2-Tightening (§5): freier `str`-Fallback ENTFERNT → der Wert ist typisiert
-        # (Zahl | max/min | Farbwort | Farbtemp-Wort). Killt "Zahl als String" (temperature="21")
-        # und "beliebiger String als Wert" (temperature="heiß") schon am Decode. Die attribute↔value-
-        # KOPPLUNG (temperature MUSS num, color MUSS Farbwort) bleibt bewusst Parser — GBNF kann sie
-        # nicht ausdrücken (kind hängt vom Schwester-kwarg ab). Vollständigkeit: alle SETTABLE_ATTRS-kinds
-        # sind num (pct/number/colortemp-Kelvin), max/min (pct) oder Wort-Enum (colorword/colortemp).
-        color_alts = " | ".join(f'"\\"{c}\\""' for c in COLOR_WORDS)
-        ct_alts = " | ".join(f'"\\"{c}\\""' for c in COLOR_TEMP_WORDS)
-        return f'num | "\\"max\\"" | "\\"min\\"" | {color_alts} | {ct_alts}'
+        # Wert-Union = Zahl | max/min | ALLE Wort-Enums über SETTABLE_ATTRS (Farbe/Farbtemp/hvac_mode/
+        # preset/lock/alarm/oscillate) [+ freier str, falls ein Attribut freie Strings zulässt: effect/option].
+        # Die attribute↔value-KOPPLUNG (temperature MUSS num, hvac_mode MUSS hvac-Wort) bleibt bewusst
+        # Parser — GBNF kann sie nicht ausdrücken (kind hängt vom Schwester-kwarg ab).
+        # NB: seit effect/option (freie Strings, Benni-Lock 2026-07-09) trägt die value-Union wieder eine
+        # `str`-Alt → das cap-v2-Wert-TYP-Tightening relaxt auf "Zahl | Wort-Enum | String" (Typ-Kopplung
+        # der numerischen Attrs bleibt Parser-erzwungen). A2-Syntax-Garantie (Wrapper/Liste) unberührt.
+        word_alts = " | ".join(f'"\\"{w}\\""' for w in settable_value_words())
+        alts = f'num | "\\"max\\"" | "\\"min\\"" | {word_alts}'
+        if settable_allows_free_str():
+            alts += " | str"
+        return alts
     return "str"  # freie Strings (name/area/floor/domain/content/message/item/duration/label) — bewusst frei
 
 

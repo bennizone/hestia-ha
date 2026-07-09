@@ -18,35 +18,79 @@ TOOL_CALL_START = "<|tool_call_start|>"
 TOOL_CALL_END = "<|tool_call_end|>"
 
 # ── Geteilter Ziel-Block (jeder Aktions-/Abfrage-Verb, alle optional) ─────
-REF_VALUES = ("it", "here", "there", "last")
+# `ref` (it/here/there/last) GESTRICHEN (Benni 2026-07-09, Grain-Footgun #1 +
+# serve-unaufgelöst = train≠serve). „Hier/das" läuft über Live-Kontext-Raum + area-Default.
 TARGET_PARAMS = {
     "name":   {"type": "str"},   # Eigenname verbatim
     "area":   {"type": "str"},
     "floor":  {"type": "str"},
     "domain": {"type": "str"},   # light|switch|climate|cover|fan|lock|media_player|sensor|...
-    "ref":    {"type": "enum", "values": REF_VALUES},
 }
+
+# ── Wort-Enums für set_state-Attribute (Vollständigkeit via Attribut-Enum, Benni 2026-07-09) ──
+HVAC_MODES = ("heat", "cool", "auto", "off", "dry", "fan_only")
+PRESETS = ("eco", "boost", "away", "comfort", "home", "sleep")     # climate preset_mode (Executor Postel-vergebend)
+LOCK_STATES = ("locked", "unlocked")                              # + Safety-Gate (Zwei-Turn-Confirm)
+ALARM_STATES = ("armed_home", "armed_away", "armed_night", "disarmed")  # + Safety-Gate
+ONOFF = ("on", "off")                                            # oscillate/boolesche Attribute
 
 # ── Attribute + Wert-Domänen ──────────────────────────────────────────────
 # kind steuert Wert-Grammatik (GBNF) + Parser-Validierung + Executor-Mapping.
 #   pct        : 0..100 | "max" | "min"
-#   number     : Zahl (z.B. Grad)
+#   number     : Zahl (z.B. Grad, Helfer-Wert)
 #   colorword  : Farbwort-Enum
 #   colortemp  : "warm" | "cool" | Kelvin-Zahl
+#   words      : geschlossenes Wort-Enum (values-Tupel) — hvac_mode/preset/lock/alarm/oscillate
+#   str        : freier String (Effektname, Select-Option) — gerätespezifisch, nicht enumerierbar
+# Universal-Setter (grain-nativ): Fähigkeit skaliert über Attribut-Enum, NICHT über neue Verben.
 SETTABLE_ATTRS = {
     "brightness": {"kind": "pct"},
     "volume":     {"kind": "pct"},
-    "position":   {"kind": "pct"},
+    "position":   {"kind": "pct"},   # Cover auf/zu → set_state(position=100/0) (Grain-Lock)
     "fan_speed":  {"kind": "pct"},
+    "tilt":       {"kind": "pct"},   # Cover-Lamellen
+    "humidity":   {"kind": "pct"},   # humidifier target
     "temperature": {"kind": "number"},
+    "value":      {"kind": "number"},  # number/input_number-Helfer (attribute="value")
     "color":      {"kind": "colorword"},
     "color_temp": {"kind": "colortemp"},
+    "hvac_mode":  {"kind": "words", "values": HVAC_MODES},
+    "preset":     {"kind": "words", "values": PRESETS},
+    "lock":       {"kind": "words", "values": LOCK_STATES},
+    "alarm":      {"kind": "words", "values": ALARM_STATES},
+    "oscillate":  {"kind": "words", "values": ONOFF},
+    "effect":     {"kind": "str"},   # Licht-Effekt (freier Name)
+    "option":     {"kind": "str"},   # select/input_select-Option (freier Name)
 }
 ADJUSTABLE_ATTRS = ("brightness", "volume", "temperature", "position", "fan_speed", "color_temp")
-GET_ATTRS = ("state", "brightness", "temperature", "position", "open", "datetime")  # +datetime (additiv, GetDateTime)
+# GET_ATTRS = Kern-Enum (breit, aber nicht Riesen-Enum). Feinere Discovery via `help`-Verb (Phase 3).
+GET_ATTRS = ("state", "brightness", "temperature", "humidity", "illuminance",
+             "battery", "power", "energy", "co2", "position", "volume",
+             "fan_speed", "hvac_mode", "lock", "open", "datetime", "weather")
 COLOR_WORDS = ("warm_white", "cold_white", "white", "red", "green", "blue",
                "yellow", "orange", "purple", "pink")
 COLOR_TEMP_WORDS = ("warm", "cool")  # colortemp-Wortwerte (neben Kelvin-Zahl) — Single-Source fürs GBNF-value-Tightening
+
+
+def settable_value_words() -> tuple[str, ...]:
+    """Alle Wort-Werte, die IRGENDEIN SETTABLE_ATTR annehmen kann (deduped, für GBNF-value-Union).
+    Single-Source: neue Wort-Enums propagieren automatisch in GBNF + Parser."""
+    out: list[str] = []
+    for spec in SETTABLE_ATTRS.values():
+        k = spec["kind"]
+        if k == "colorword":
+            out += list(COLOR_WORDS)
+        elif k == "colortemp":
+            out += list(COLOR_TEMP_WORDS)
+        elif k == "words":
+            out += list(spec["values"])
+    seen: set[str] = set()
+    return tuple(w for w in out if not (w in seen or seen.add(w)))
+
+
+def settable_allows_free_str() -> bool:
+    """True, wenn ein SETTABLE_ATTR freie Strings als Wert zulässt (effect/option) → GBNF-value braucht str-Alt."""
+    return any(spec["kind"] == "str" for spec in SETTABLE_ATTRS.values())
 
 # ── Enums ─────────────────────────────────────────────────────────────────
 DIRECTION = ("up", "down")
@@ -55,8 +99,8 @@ AGGREGATE = ("value", "any", "all", "count", "avg", "min", "max")
 # TIMER_ACTION: v1-Kern (set,cancel,check) + additive Lifecycle (2026-07-07, C1-Scope-Gap):
 #   cancel_all (HassCancelAllTimers) · add/subtract (Increase/DecreaseTimer, nutzen duration relativ) · pause/resume (Pause/UnpauseTimer)
 TIMER_ACTION = ("set", "cancel", "cancel_all", "check", "add", "subtract", "pause", "resume")
-# MEDIA_ACTION: v1-Kern + additive mute/unmute (HassMediaPlayerMute/Unmute)
-MEDIA_ACTION = ("play", "pause", "next", "previous", "stop", "play_content", "mute", "unmute")
+# MEDIA_ACTION: v1-Kern + additive mute/unmute (HassMediaPlayerMute/Unmute) + source (Quelle wählen, content=Quellenname)
+MEDIA_ACTION = ("play", "pause", "next", "previous", "stop", "play_content", "mute", "unmute", "source")
 LIST_ACTION = ("add", "remove", "complete")  # HassListAddItem/RemoveItem/CompleteItem
 VACUUM_ACTION = ("start", "return_to_base", "clean_area")  # HassVacuumStart/ReturnToBase/CleanArea (stop → verb `stop`)
 
@@ -133,6 +177,13 @@ VERBS = {
     "stop": {             # Bewegung anhalten — domain-polymorph (cover.stop_cover | vacuum.stop), spiegelt HassStopMoving
         "target": True,
         "params": {},
+        "required": [],
+    },
+    # ── Discovery (2026-07-09): Model navigiert Fähigkeiten/Attribute selbst statt Riesen-Enum.
+    #    Executor-`help`-Endpoint + Trainingsverteilung = Phase 3 (im selben 150k-Regen).
+    "help": {
+        "target": False,
+        "params": {"topic": {"type": "str"}},   # optional: worum geht's (Attribut/Gerät/Fähigkeit)
         "required": [],
     },
     # ── cap-v2: ask/decline/respond GESTRICHEN → freier Antworttext im Loop (kein Tool-Block). ──
