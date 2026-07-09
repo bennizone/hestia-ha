@@ -11,6 +11,7 @@ train==serve: Prompt LOKAL rendern (LFM2.5-Template via hestia_cap.render_prompt
 """
 from __future__ import annotations
 
+import json
 import logging
 import random
 
@@ -33,6 +34,33 @@ _LOGGER = logging.getLogger(__name__)
 
 _MAX_NEW_TOKENS = 128
 _HTTP_TIMEOUT = 120
+
+# Truthfulness-Guard (RESULT_SCHEMA §4): bei ok:false darf die Antwort keinen Erfolg behaupten.
+_SUCCESS_MARKERS = ("erledigt", "eingeschaltet", "ausgeschaltet", "ist an", "ist aus", "mach ich",
+                    "geschaltet", "gestellt", "aktiviert", "geöffnet", "geschlossen", "erhöht", "reduziert")
+_ERROR_FALLBACK = {
+    "unsafe": "Das kann ich aus Sicherheitsgründen nicht.",
+    "entity_not_found": "So ein Gerät kenne ich nicht.",
+    "no_targets": "Dazu habe ich kein passendes Gerät gefunden.",
+    "no_data": "Das konnte ich nicht auslesen.",
+    "not_controllable": "Das lässt sich so nicht steuern.",
+    "timeout": "Das hat gerade nicht geklappt, versuch es bitte nochmal.",
+    "unparseable": "Das habe ich nicht ganz verstanden.",
+}
+_ERROR_FALLBACK_DEFAULT = "Das hat leider nicht geklappt."
+
+
+def _guard_truthful(answer: str, last_result: dict | None) -> str:
+    """Ersetzt eine Erfolgs-Behauptung durch ehrlichen Fallback, wenn das letzte Result ok:false war.
+    Partial (ok:false MIT targets) ist ausgenommen — da ist Teil-Erfolg legitim."""
+    if not last_result or last_result.get("ok", True) or last_result.get("targets"):
+        return answer
+    if any(m in answer.lower() for m in _SUCCESS_MARKERS):
+        err = last_result.get("error", "")
+        _LOGGER.warning("Hestia truthfulness-guard: Erfolg behauptet trotz ok:false (%s) → ersetzt. war=%r",
+                        err, answer)
+        return _ERROR_FALLBACK.get(err, _ERROR_FALLBACK_DEFAULT)
+    return answer
 
 
 def _looks_like_tool(text: str) -> bool:
@@ -85,6 +113,7 @@ class HestiaAgent(conversation.ConversationEntity):
 
         # 2. Loop ≤ depth
         answer: str | None = None
+        last_result: dict | None = None
         for i in range(self._depth):
             text = await self._complete(msgs, tools)
             _LOGGER.debug("Hestia iter %d model=%r", i, text)
@@ -96,6 +125,10 @@ class HestiaAgent(conversation.ConversationEntity):
                     result = await execute_calls(self.hass, parsed, exposure,
                                                  user_input.context, self._deny)
                 _LOGGER.debug("Hestia iter %d result=%s", i, result)
+                try:
+                    last_result = json.loads(result)
+                except ValueError:
+                    last_result = None
                 msgs.append({"role": "assistant", "content": text})
                 msgs.append({"role": "tool", "content": result})
                 continue
@@ -105,6 +138,8 @@ class HestiaAgent(conversation.ConversationEntity):
         # 3. Loop erschöpft → variabler Fehlertext (KEIN LLM)
         if answer is None:
             answer = random.choice(LOOP_EXHAUSTED_TEXTS)
+        else:
+            answer = _guard_truthful(answer, last_result)   # kein falscher Erfolg bei ok:false
 
         return self._result(user_input, chat_log, answer)
 

@@ -226,45 +226,69 @@ async def _set_state(hass, eids, names, args, context) -> dict:
     return {"ok": False, "error": "not_controllable", "query": attr}
 
 
+def _adj_read(st, attr):
+    """(wert, unit) des adjust-relevanten Attributs — für Vorher/Nachher-Echo."""
+    a = st.attributes
+    if attr == "brightness":
+        b = a.get("brightness")
+        return (round(b / 255 * 100) if b is not None else None, "%")
+    if attr == "volume":
+        v = a.get("volume_level")
+        return (round(v * 100) if v is not None else None, "%")
+    if attr == "temperature":
+        return (a.get("temperature"), "°C")
+    if attr == "position":
+        return (a.get("current_position"), "%")
+    return (None, None)
+
+
 async def _adjust(hass, eids, names, args, exposure, context) -> dict:
+    """Relatives Verstellen. Echot den RESULTIERENDEN Wert zurück (Vorher/Nachher-Read), damit die
+    Antwort ihn truthful zitieren kann; `at_limit` wenn schon am Anschlag (kein Effekt)."""
     attr = args["attribute"]
     direction = args.get("direction", "up")
     sign = 1 if direction == "up" else -1
     amount = args.get("amount", "some")
+    before = {e: (_adj_read(hass.states.get(e), attr)[0] if hass.states.get(e) else None) for e in eids}
+
     if attr == "brightness":
-        step = sign * _step(amount, _STEP_PCT)
+        step = int(sign * _step(amount, _STEP_PCT))
         await hass.services.async_call("light", "turn_on",
-                                       {"entity_id": eids, "brightness_step_pct": int(step)},
+                                       {"entity_id": eids, "brightness_step_pct": step},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names}
-    if attr == "volume":
+    elif attr == "volume":
         svc = "volume_up" if sign > 0 else "volume_down"
         await hass.services.async_call("media_player", svc, {"entity_id": eids},
                                        blocking=True, context=context)
-        return {"ok": True, "targets": names}
-    if attr in ("temperature", "position"):
-        # relativ: aktuellen Wert lesen und ±Delta setzen (pro Entität)
+    elif attr in ("temperature", "position"):
         delta = sign * (_step(amount, _STEP_DEG) if attr == "temperature" else _step(amount, _STEP_PCT))
         for eid in eids:
-            st = hass.states.get(eid)
-            if not st:
+            cur = before.get(eid)
+            if cur is None:
                 continue
             if attr == "temperature":
-                cur = st.attributes.get("temperature")
-                if cur is None:
-                    continue
                 await hass.services.async_call("climate", "set_temperature",
                                                {"entity_id": eid, "temperature": float(cur) + delta},
                                                blocking=True, context=context)
             else:
-                cur = st.attributes.get("current_position")
-                if cur is None:
-                    continue
                 await hass.services.async_call("cover", "set_cover_position",
                                                {"entity_id": eid, "position": max(0, min(100, int(cur + delta)))},
                                                blocking=True, context=context)
-        return {"ok": True, "targets": names}
-    return {"ok": False, "error": "not_controllable", "query": attr}
+    else:
+        return {"ok": False, "error": "not_controllable", "query": attr}
+
+    out = {"ok": True, "targets": names}
+    # Wert-Echo nur bei EINDEUTIGEM Einzelziel (Gruppe → mehrdeutig, nur targets)
+    if len(eids) == 1:
+        st = hass.states.get(eids[0])
+        val, unit = _adj_read(st, attr) if st else (None, None)
+        if val is not None:
+            out["value"] = val
+            if unit:
+                out["unit"] = unit
+            if before.get(eids[0]) is not None and val == before[eids[0]]:
+                out["at_limit"] = True      # kein Effekt → schon am Anschlag ("bereits am Minimum")
+    return out
 
 
 # ── get_state (Read-Verb, bleibt im Loop) ─────────────────────────────────────
