@@ -102,11 +102,13 @@ class HestiaAgent(conversation.ConversationEntity):
         exposure = build_exposure(self.hass, self.entry.data.get(CONF_EXPOSURE))
         house = build_house(self.hass, exposure)
         system_content = render_system_content(house)   # statischer, cachebarer Präfix (ohne Raum/Zeit)
-        live_context = self._live_context(user_input)    # volatiler Schwanz NACH den Tools
+        live_context = self._live_context(user_input)    # volatiler Schwanz = 2. System-Message
 
         tools = all_tool_defs()
-        msgs = [{"role": "system", "content": system_content},
-                {"role": "user", "content": user_input.text}]
+        msgs = [{"role": "system", "content": system_content}]
+        if live_context:
+            msgs.append({"role": "system", "content": live_context})   # nach den Tools (train==serve)
+        msgs.append({"role": "user", "content": user_input.text})
 
         _LOGGER.debug("Hestia in=%r exposure=%d live=%r", user_input.text, len(exposure), live_context)
 
@@ -114,7 +116,7 @@ class HestiaAgent(conversation.ConversationEntity):
         answer: str | None = None
         last_result: dict | None = None
         for i in range(self._depth):
-            text = await self._complete(msgs, tools, live_context)
+            text = await self._complete(msgs, tools)
             _LOGGER.debug("Hestia iter %d model=%r", i, text)
             if _looks_like_tool(text):
                 parsed = parse(text)
@@ -166,8 +168,8 @@ class HestiaAgent(conversation.ConversationEntity):
         return " ".join(parts)
 
     # ── HTTP: /completion (raw, lokaler Render) ────────────────────────────────
-    async def _complete(self, msgs: list[dict], tools: list[dict], live_context: str = "") -> str:
-        prompt = render_prompt(msgs, tools=tools, live_context=live_context, add_generation_prompt=True)
+    async def _complete(self, msgs: list[dict], tools: list[dict]) -> str:
+        prompt = render_prompt(msgs, tools=tools, add_generation_prompt=True)
         body = {"prompt": prompt, "n_predict": _MAX_NEW_TOKENS, "temperature": 0.0,
                 "cache_prompt": True, "stop": [STOP]}
         session = async_get_clientsession(self.hass)

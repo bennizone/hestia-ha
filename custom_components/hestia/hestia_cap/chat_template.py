@@ -30,16 +30,17 @@ def _tojson(tool: dict) -> str:
 
 
 def render_prompt(messages: list[dict], tools: list[dict] | None = None,
-                  live_context: str = "", add_generation_prompt: bool = True) -> str:
+                  add_generation_prompt: bool = True) -> str:
     """messages (role/content, content=str) + innere Tool-Defs → LFM2.5-Prompt-String.
 
     Erwartet: messages[0] optional system; alle content sind Strings. Reproduziert
-    apply_chat_template(tokenize=False, add_generation_prompt=…) byte-genau (bei live_context="").
+    apply_chat_template(tokenize=False, add_generation_prompt=…) byte-genau.
 
-    `live_context`: volatiler Kontext-Schwanz (Zeit/Nutzer/Raum/laufende Timer+Medien), der NACH
-    den Tools ans Ende des System-Blocks kommt — so bleibt [Instruktionen+Haus+Tools] ein
-    byte-stabiler, prefix-cachebarer Präfix und nur der kurze Schwanz wird pro Request neu
-    verarbeitet. (train==serve: Generator muss denselben Schwanz an derselben Stelle rendern.)
+    Live-Kontext-Schwanz (Zeit/Nutzer/Raum/laufende Timer+Medien): als ZWEITE System-Message
+    (messages[1], role=system) übergeben. Sie wird — wie bei apply_chat_template — als eigener
+    System-Turn NACH dem Tool-tragenden ersten System-Block gerendert → [Instruktionen+Haus+Tools]
+    bleibt ein byte-stabiler, prefix-cachebarer Präfix; nur der Schwanz wird pro Request neu
+    verarbeitet. train==serve byte-verifiziert (2-System-Message-Golden).
     """
     out = [BOS_TOKEN]
     msgs = list(messages)
@@ -56,11 +57,8 @@ def render_prompt(messages: list[dict], tools: list[dict] | None = None,
         system_prompt += ", ".join(_tojson(t) for t in tools)
         system_prompt += "]"
 
-    # 2b. Volatiler Live-Kontext-Schwanz NACH den Tools (prefix-cache-schonend)
-    if live_context:
-        system_prompt += ("\n" if system_prompt else "") + live_context
-
-    # 3. System-Block nur wenn nicht leer
+    # 3. System-Block nur wenn nicht leer  (eine evtl. 2. System-Message = Live-Kontext läuft
+    #    unten in der Schleife als eigener System-Turn nach den Tools — train==serve-Naht)
     if system_prompt:
         out.append(f"{IM_START}system\n{system_prompt}{IM_END}\n")
 
