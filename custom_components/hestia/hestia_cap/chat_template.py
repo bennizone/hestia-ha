@@ -30,11 +30,16 @@ def _tojson(tool: dict) -> str:
 
 
 def render_prompt(messages: list[dict], tools: list[dict] | None = None,
-                  add_generation_prompt: bool = True) -> str:
+                  live_context: str = "", add_generation_prompt: bool = True) -> str:
     """messages (role/content, content=str) + innere Tool-Defs → LFM2.5-Prompt-String.
 
     Erwartet: messages[0] optional system; alle content sind Strings. Reproduziert
-    apply_chat_template(tokenize=False, add_generation_prompt=…) byte-genau.
+    apply_chat_template(tokenize=False, add_generation_prompt=…) byte-genau (bei live_context="").
+
+    `live_context`: volatiler Kontext-Schwanz (Zeit/Nutzer/Raum/laufende Timer+Medien), der NACH
+    den Tools ans Ende des System-Blocks kommt — so bleibt [Instruktionen+Haus+Tools] ein
+    byte-stabiler, prefix-cachebarer Präfix und nur der kurze Schwanz wird pro Request neu
+    verarbeitet. (train==serve: Generator muss denselben Schwanz an derselben Stelle rendern.)
     """
     out = [BOS_TOKEN]
     msgs = list(messages)
@@ -45,11 +50,15 @@ def render_prompt(messages: list[dict], tools: list[dict] | None = None,
         system_prompt = msgs[0]["content"]
         msgs = msgs[1:]
 
-    # 2. Tools an den System-Prompt anhängen (innere Defs, tojson)
+    # 2. Tools an den System-Prompt anhängen (innere Defs, tojson) — Teil des statischen Präfix
     if tools:
         system_prompt += ("\n" if system_prompt else "") + "List of tools: ["
         system_prompt += ", ".join(_tojson(t) for t in tools)
         system_prompt += "]"
+
+    # 2b. Volatiler Live-Kontext-Schwanz NACH den Tools (prefix-cache-schonend)
+    if live_context:
+        system_prompt += ("\n" if system_prompt else "") + live_context
 
     # 3. System-Block nur wenn nicht leer
     if system_prompt:

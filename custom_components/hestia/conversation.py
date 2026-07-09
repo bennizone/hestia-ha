@@ -34,6 +34,7 @@ _LOGGER = logging.getLogger(__name__)
 
 _MAX_NEW_TOKENS = 128
 _HTTP_TIMEOUT = 120
+_WEEKDAYS_DE = ("Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag")
 
 # Truthfulness-Guard (RESULT_SCHEMA §4): bei ok:false darf die Antwort keinen Erfolg behaupten.
 _SUCCESS_MARKERS = ("erledigt", "eingeschaltet", "ausgeschaltet", "ist an", "ist aus", "mach ich",
@@ -100,22 +101,20 @@ class HestiaAgent(conversation.ConversationEntity):
         # 1. Haus + Exposure aus der HA-Registry; System-Prompt (train==serve-Naht)
         exposure = build_exposure(self.hass, self.entry.data.get(CONF_EXPOSURE))
         house = build_house(self.hass, exposure)
-        system_content = render_system_content(house)
-        room = self._device_area(user_input.device_id)
-        if room:
-            system_content += f"\n\nAktueller Raum: {room}."   # M5, byte-gleich zum Generator
+        system_content = render_system_content(house)   # statischer, cachebarer Präfix (ohne Raum/Zeit)
+        live_context = self._live_context(user_input)    # volatiler Schwanz NACH den Tools
 
         tools = all_tool_defs()
         msgs = [{"role": "system", "content": system_content},
                 {"role": "user", "content": user_input.text}]
 
-        _LOGGER.debug("Hestia in=%r exposure=%d entities", user_input.text, len(exposure))
+        _LOGGER.debug("Hestia in=%r exposure=%d live=%r", user_input.text, len(exposure), live_context)
 
         # 2. Loop ≤ depth
         answer: str | None = None
         last_result: dict | None = None
         for i in range(self._depth):
-            text = await self._complete(msgs, tools)
+            text = await self._complete(msgs, tools, live_context)
             _LOGGER.debug("Hestia iter %d model=%r", i, text)
             if _looks_like_tool(text):
                 parsed = parse(text)
@@ -143,9 +142,32 @@ class HestiaAgent(conversation.ConversationEntity):
 
         return self._result(user_input, chat_log, answer)
 
+    # ── Live-Kontext-Schwanz (volatil, nach den Tools — prefix-cache-schonend) ──
+    def _live_context(self, user_input) -> str:
+        """Datum/Tag/Zeit · Raum (device→area; mobil→kein fester Raum) · laufende Timer/Medien.
+        PROTOTYP (v23.1): Format provisorisch; train==serve-Lock folgt im Generator."""
+        from homeassistant.util import dt as dt_util
+        now = dt_util.now()
+        parts = [f"Aktueller Kontext: {_WEEKDAYS_DE[now.weekday()]}, "
+                 f"{now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} Uhr."]
+        room = self._device_area(user_input.device_id)
+        parts.append(f"Raum: {room}." if room else "Raum: unterwegs, kein fester Raum.")
+        active = []
+        for st in self.hass.states.async_all("timer"):
+            if st.state == "active":
+                nm = st.attributes.get("friendly_name") or "Timer"
+                rem = st.attributes.get("remaining")
+                active.append(f"Timer {nm}" + (f" (noch {rem})" if rem else ""))
+        for st in self.hass.states.async_all("media_player"):
+            if st.state == "playing":
+                active.append(f"Medienwiedergabe {st.attributes.get('friendly_name') or ''}".strip())
+        if active:
+            parts.append("Läuft gerade: " + "; ".join(active) + ".")
+        return " ".join(parts)
+
     # ── HTTP: /completion (raw, lokaler Render) ────────────────────────────────
-    async def _complete(self, msgs: list[dict], tools: list[dict]) -> str:
-        prompt = render_prompt(msgs, tools=tools, add_generation_prompt=True)
+    async def _complete(self, msgs: list[dict], tools: list[dict], live_context: str = "") -> str:
+        prompt = render_prompt(msgs, tools=tools, live_context=live_context, add_generation_prompt=True)
         body = {"prompt": prompt, "n_predict": _MAX_NEW_TOKENS, "temperature": 0.0,
                 "cache_prompt": True, "stop": [STOP]}
         session = async_get_clientsession(self.hass)
