@@ -233,6 +233,41 @@ def shape_turn(names: list) -> dict:
     return ok(targets=names)
 
 
+# Deferred-Verben (run_routine/manage_list/control_media/control_vacuum/set_timer/announce):
+# Ziel-Shaping GETEILT (train==serve). Der HA-Service-/Intent-Dispatch lebt NUR im Executor —
+# hier entsteht ausschließlich das Result-JSON, das der Model lernt.
+#  · set_timer/announce = ABSTRAKT (Timer/Broadcast laufen im Intent-Layer, area = Dispatch-Detail,
+#    kein Geräte-Ziel im Result) → targets=[].
+#  · run_routine/manage_list/control_media/control_vacuum = reales Ziel (Szene·Liste·Player·Sauger)
+#    → geteilter Resolver → targets=llm_names (konsistent mit turn_on/set_state). Fehler
+#    (entity_not_found/ambiguous) fließt aus demselben Resolver → truthful auf beiden Seiten.
+_DEFERRED_ABSTRACT = ("set_timer", "announce")
+# Deferred-Geräteverben → implizierte Ziel-Domain(s). area-Auflösung liefert SONST den ganzen Raum
+# (alle Domains) → auf die semantisch passende Domain einengen (analog narrow_by_attr_domain).
+_DEFERRED_DOMAIN = {
+    "control_media": ("media_player",),
+    "control_vacuum": ("vacuum",),
+    "run_routine": ("scene", "script", "automation"),
+    "manage_list": ("todo",),
+}
+
+
+def deferred_result(verb: str, args: dict, exposure: dict) -> tuple:
+    """(result, eids) für die deferred Verben. eids = aufgelöste Ziel-Entitäten (Executor-Dispatch)
+    oder None. Empirie (v22-Master): media/vacuum-Cases tragen IMMER name/area → kein bare-no_targets."""
+    if verb in _DEFERRED_ABSTRACT:
+        return ok(targets=[]), None
+    eids, err = resolve(args, exposure)
+    if err:
+        return err, None
+    doms = _DEFERRED_DOMAIN.get(verb)
+    if doms:                                  # area/name → auf die Verb-Domain einengen
+        eids = [e for e in eids if exposure[e]["domain"] in doms]
+        if not eids:
+            return err_no_targets(args.get("name") or args.get("area") or ""), None
+    return ok(targets=names_of(exposure, eids)), eids
+
+
 def shape_set_state(names: list, canon, unit) -> dict:
     out = ok(targets=names, value=canon)
     if unit:

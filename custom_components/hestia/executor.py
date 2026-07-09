@@ -19,11 +19,20 @@ from __future__ import annotations
 import json
 import logging
 
+import re
+
 from homeassistant.core import HomeAssistant, Context
+from homeassistant.helpers import intent
 
 from .hestia_cap import result as R
 
 _LOGGER = logging.getLogger(__name__)
+
+# Deferred-Verben (B1=A, Benni 2026-07-09): nativer Dispatch. run_routine/manage_list/control_media/
+# control_vacuum via HA-Service; set_timer/announce/play_content via Intent-Layer (TimerManager/
+# Broadcast/MediaSource). Result-Shape kommt IMMER aus dem geteilten R.deferred_result (train==serve).
+_DEFERRED_VERBS = ("run_routine", "manage_list", "control_media", "control_vacuum",
+                   "set_timer", "announce")
 
 
 def _state_read(hass: HomeAssistant, eid: str) -> dict | None:
@@ -41,6 +50,9 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
 
     if verb == "get_state":
         return await _get_state(hass, args, exposure)
+
+    if verb in _DEFERRED_VERBS:
+        return await _deferred(hass, call, exposure, context)
 
     # ab hier: mutierende / Aktions-Verben → Ziel auflösen (geteilter Resolver)
     eids, err = R.resolve(args, exposure)
@@ -71,8 +83,7 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
         _LOGGER.warning("Hestia executor %s failed: %s", verb, e)
         return R.err_timeout(args.get("name") or args.get("domain") or "")
 
-    # verbleibende Verben (run_routine/set_timer/control_media/announce/manage_list/control_vacuum)
-    # sind bewusst DEFERRED (MVP) — ehrlich melden statt raten.
+    # Sicherheitsnetz: unbekanntes/nicht implementiertes Verb (z.B. help = Phase 3) → ehrlich melden.
     return R.err_not_controllable(verb)
 
 
@@ -212,6 +223,109 @@ async def _get_state(hass, args, exposure) -> dict:
     if res.get("error") == "no_data":   # query erden (Serve-Parität)
         res["query"] = args.get("name") or ""
     return res
+
+
+# ── Deferred-Verben: nativer Dispatch (B1=A) ──────────────────────────────────
+# Simple (target-lose) media/vacuum-Actions → 1:1 HA-Service. Result-Shape IMMER aus R.deferred_result.
+_MEDIA_SVC = {
+    "play": ("media_play", {}), "pause": ("media_pause", {}),
+    "next": ("media_next_track", {}), "previous": ("media_previous_track", {}),
+    "stop": ("media_stop", {}),
+    "mute": ("volume_mute", {"is_volume_muted": True}),
+    "unmute": ("volume_mute", {"is_volume_muted": False}),
+}
+_VACUUM_SVC = {
+    "start": ("start", {}), "return_to_base": ("return_to_base", {}),
+    "clean_area": ("start", {}),   # MVP: kein universeller Raum-Clean-Service → start
+}
+_ROUTINE_SVC = {"scene": ("scene", "turn_on"), "script": ("script", "turn_on"),
+                "automation": ("automation", "trigger")}
+# Timer-Action → HA-Intent (Voice-Timer leben in HAs TimerManager, KEIN timer.*-Service).
+_TIMER_INTENT = {
+    "set": "HassStartTimer", "cancel": "HassCancelTimer", "cancel_all": "HassCancelAllTimers",
+    "check": "HassTimerStatus", "add": "HassIncreaseTimer", "subtract": "HassDecreaseTimer",
+    "pause": "HassPauseTimer", "resume": "HassUnpauseTimer",
+}
+
+
+def _duration_slots(d) -> dict:
+    """cap-v2 duration-String ('1h35min'/'60s') → HA-Timer-Intent-Slots {hours,minutes,seconds}."""
+    slots = {}
+    for num, unit in re.findall(r"(\d+)\s*(h|min|s)", str(d or "")):
+        slots[{"h": "hours", "min": "minutes", "s": "seconds"}[unit]] = {"value": int(num)}
+    return slots
+
+
+async def _handle_intent(hass, intent_type: str, slots: dict, context) -> None:
+    """An HAs eingebauten Intent-Handler delegieren (TimerManager/Broadcast/MediaSource).
+    Slots = {name: {'value': ...}}. Raises bei fehlendem Handler/Kontext → Aufrufer → err_timeout."""
+    await intent.async_handle(hass, "hestia", intent_type,
+                              {k: v for k, v in slots.items() if v.get("value") not in (None, "")},
+                              context=context)
+
+
+async def _deferred(hass, call, exposure: dict, context: Context) -> dict:
+    """run_routine/manage_list/control_media/control_vacuum (HA-Service) +
+    set_timer/announce/play_content (Intent-Layer). Result = geteiltes R.deferred_result (train==serve)."""
+    verb, args = call.verb, call.args
+    res, eids = R.deferred_result(verb, args, exposure)
+    if not res.get("ok"):
+        return res                       # entity_not_found/ambiguous aus dem geteilten Resolver
+    try:
+        if verb == "control_media":
+            await _dispatch_media(hass, args, eids, args.get("action"), context)
+        elif verb == "control_vacuum":
+            svc, extra = _VACUUM_SVC[args["action"]]
+            await hass.services.async_call("vacuum", svc, {"entity_id": eids, **extra},
+                                           blocking=True, context=context)
+        elif verb == "run_routine":
+            for eid in eids:
+                dom, svc = _ROUTINE_SVC.get(exposure[eid]["domain"], ("homeassistant", "turn_on"))
+                await hass.services.async_call(dom, svc, {"entity_id": eid},
+                                               blocking=True, context=context)
+        elif verb == "manage_list":
+            await _dispatch_list(hass, args, eids, context)
+        elif verb == "set_timer":
+            slots = _duration_slots(args.get("duration"))
+            if args.get("label"):
+                slots["name"] = {"value": args["label"]}
+            await _handle_intent(hass, _TIMER_INTENT[args["action"]], slots, context)
+        elif verb == "announce":
+            await _handle_intent(hass, "HassBroadcast", {"message": {"value": args.get("message", "")}},
+                                 context)
+    except Exception as e:  # noqa: BLE001 — HA-Fehler → truthful err_timeout, kein Crash
+        _LOGGER.warning("Hestia deferred %s failed: %s", verb, e)
+        return R.err_timeout(args.get("name") or args.get("action") or verb)
+    return res
+
+
+async def _dispatch_media(hass, args, eids, action, context) -> None:
+    if action == "source":
+        await hass.services.async_call("media_player", "select_source",
+                                       {"entity_id": eids, "source": args.get("content", "")},
+                                       blocking=True, context=context)
+        return
+    if action == "play_content":         # Search&Play → Intent (Media-Source-Auflösung)
+        await _handle_intent(hass, "HassMediaSearchAndPlay",
+                             {"query": {"value": args.get("content", "")},
+                              "name": {"value": args.get("name")},
+                              "area": {"value": args.get("area")}}, context)
+        return
+    svc, extra = _MEDIA_SVC[action]
+    await hass.services.async_call("media_player", svc, {"entity_id": eids, **extra},
+                                   blocking=True, context=context)
+
+
+async def _dispatch_list(hass, args, eids, context) -> None:
+    action, item = args["action"], args.get("item", "")
+    svc, extra = {
+        "add": ("add_item", {"item": item}),
+        "remove": ("remove_item", {"item": item}),
+        "complete": ("update_item", {"item": item, "status": "completed"}),
+    }[action]
+    for eid in eids:
+        await hass.services.async_call("todo", svc, {"entity_id": eid, **extra},
+                                       blocking=True, context=context)
 
 
 # ── Öffentlicher Einstieg ─────────────────────────────────────────────────────
