@@ -125,7 +125,8 @@ class HestiaAgent(conversation.ConversationEntity):
                     result = json.dumps(R.err_unparseable(), ensure_ascii=False, separators=(",", ":"))
                 else:
                     result = await execute_calls(self.hass, parsed, exposure,
-                                                 user_input.context, self._deny)
+                                                 user_input.context, self._deny,
+                                                 user_input.device_id)
                 _LOGGER.debug("Hestia iter %d result=%s", i, result)
                 try:
                     last_result = json.loads(result)

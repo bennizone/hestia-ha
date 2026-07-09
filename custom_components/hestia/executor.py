@@ -45,14 +45,14 @@ def _state_read(hass: HomeAssistant, eid: str) -> dict | None:
 
 # ── Einzel-Call ausführen ─────────────────────────────────────────────────────
 async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
-                    deny: list) -> dict:
+                    deny: list, device_id: str | None = None) -> dict:
     verb, args = call.verb, call.args
 
     if verb == "get_state":
         return await _get_state(hass, args, exposure)
 
     if verb in _DEFERRED_VERBS:
-        return await _deferred(hass, call, exposure, context)
+        return await _deferred(hass, call, exposure, context, device_id)
 
     # ab hier: mutierende / Aktions-Verben → Ziel auflösen (geteilter Resolver)
     eids, err = R.resolve(args, exposure)
@@ -256,15 +256,16 @@ def _duration_slots(d) -> dict:
     return slots
 
 
-async def _handle_intent(hass, intent_type: str, slots: dict, context) -> None:
+async def _handle_intent(hass, intent_type: str, slots: dict, context, device_id=None) -> None:
     """An HAs eingebauten Intent-Handler delegieren (TimerManager/Broadcast/MediaSource).
-    Slots = {name: {'value': ...}}. Raises bei fehlendem Handler/Kontext → Aufrufer → err_timeout."""
+    Slots = {name: {'value': ...}}; device_id = Voice-Satellit (Timer/Broadcast binden daran —
+    ohne ihn wirft StartTimer TimersNotSupportedError, exakt wie HA selbst). Raises → err_timeout."""
     await intent.async_handle(hass, "hestia", intent_type,
                               {k: v for k, v in slots.items() if v.get("value") not in (None, "")},
-                              context=context)
+                              context=context, device_id=device_id)
 
 
-async def _deferred(hass, call, exposure: dict, context: Context) -> dict:
+async def _deferred(hass, call, exposure: dict, context: Context, device_id=None) -> dict:
     """run_routine/manage_list/control_media/control_vacuum (HA-Service) +
     set_timer/announce/play_content (Intent-Layer). Result = geteiltes R.deferred_result (train==serve)."""
     verb, args = call.verb, call.args
@@ -273,7 +274,7 @@ async def _deferred(hass, call, exposure: dict, context: Context) -> dict:
         return res                       # entity_not_found/ambiguous aus dem geteilten Resolver
     try:
         if verb == "control_media":
-            await _dispatch_media(hass, args, eids, args.get("action"), context)
+            await _dispatch_media(hass, args, eids, args.get("action"), context, device_id)
         elif verb == "control_vacuum":
             svc, extra = _VACUUM_SVC[args["action"]]
             await hass.services.async_call("vacuum", svc, {"entity_id": eids, **extra},
@@ -286,20 +287,22 @@ async def _deferred(hass, call, exposure: dict, context: Context) -> dict:
         elif verb == "manage_list":
             await _dispatch_list(hass, args, eids, context)
         elif verb == "set_timer":
+            # add/subtract: duration = Delta (hours/minutes/seconds); cancel/check/pause/resume:
+            # kein duration → über name (label) den Timer identifizieren (HA-Slot-Schema).
             slots = _duration_slots(args.get("duration"))
             if args.get("label"):
                 slots["name"] = {"value": args["label"]}
-            await _handle_intent(hass, _TIMER_INTENT[args["action"]], slots, context)
+            await _handle_intent(hass, _TIMER_INTENT[args["action"]], slots, context, device_id)
         elif verb == "announce":
             await _handle_intent(hass, "HassBroadcast", {"message": {"value": args.get("message", "")}},
-                                 context)
+                                 context, device_id)
     except Exception as e:  # noqa: BLE001 — HA-Fehler → truthful err_timeout, kein Crash
         _LOGGER.warning("Hestia deferred %s failed: %s", verb, e)
         return R.err_timeout(args.get("name") or args.get("action") or verb)
     return res
 
 
-async def _dispatch_media(hass, args, eids, action, context) -> None:
+async def _dispatch_media(hass, args, eids, action, context, device_id=None) -> None:
     if action == "source":
         await hass.services.async_call("media_player", "select_source",
                                        {"entity_id": eids, "source": args.get("content", "")},
@@ -307,9 +310,9 @@ async def _dispatch_media(hass, args, eids, action, context) -> None:
         return
     if action == "play_content":         # Search&Play → Intent (Media-Source-Auflösung)
         await _handle_intent(hass, "HassMediaSearchAndPlay",
-                             {"query": {"value": args.get("content", "")},
+                             {"search_query": {"value": args.get("content", "")},
                               "name": {"value": args.get("name")},
-                              "area": {"value": args.get("area")}}, context)
+                              "area": {"value": args.get("area")}}, context, device_id)
         return
     svc, extra = _MEDIA_SVC[action]
     await hass.services.async_call("media_player", svc, {"entity_id": eids, **extra},
@@ -330,18 +333,21 @@ async def _dispatch_list(hass, args, eids, context) -> None:
 
 # ── Öffentlicher Einstieg ─────────────────────────────────────────────────────
 async def execute_calls(hass: HomeAssistant, parsed, exposure: dict,
-                        context: Context, deny: list) -> str:
+                        context: Context, deny: list, device_id: str | None = None) -> str:
     """ParseResult → rev2-Result-JSON-String (kompakt). Single-Call = reiches Einzel-Result;
-    Multi-Call = sequenziell + EIN aggregiertes {ok,targets[,failed]}."""
+    Multi-Call = sequenziell + EIN aggregiertes {ok,targets[,failed]}.
+
+    device_id = originierendes Gerät (Voice-Satellit) aus dem Conversation-Input — für den
+    Intent-Layer nötig: Voice-Timer/Broadcast binden an den Satelliten (HA-Intent-Kontext)."""
     calls = parsed.calls
     if len(calls) == 1:
-        res = await _exec_one(hass, calls[0], exposure, context, deny)
+        res = await _exec_one(hass, calls[0], exposure, context, deny, device_id)
         return json.dumps(res, ensure_ascii=False, separators=(",", ":"))
 
     # Multi-Call: aggregieren (Aktions-Verben). Reads im Multi-Turn sind untypisch → best effort.
     targets, failed, ok = [], [], True
     for c in calls:
-        r = await _exec_one(hass, c, exposure, context, deny)
+        r = await _exec_one(hass, c, exposure, context, deny, device_id)
         if r.get("ok"):
             targets += r.get("targets", [])
         else:
