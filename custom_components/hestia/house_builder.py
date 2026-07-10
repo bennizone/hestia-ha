@@ -5,34 +5,19 @@ Renderer byte-gleich zum Training in den Prompt gießt) UND das Exposure-Set, ge
 Executor auflöst.
 
 Exposure-Set (Benni-Lock): EIGENES Mapping pro Entität `{llm_name, aliases[], domain, area,
-floor, expose}`. MVP-Seed: Membership = HAs conversation-Exposure (kuratierbar später, F1),
-llm_name = friendly_name, aliases = Registry-Aliase. Ein optionales Override-Dict aus der
-Config (CONF_EXPOSURE) darf einzelne Felder/expose überschreiben.
+floor, expose}`. **Quelle = unser Config-Store** (store.py, kuratiert im Panel), NICHT mehr HAs
+conversation-Exposure. Membership = `added AND active` (die „hinzugefügt & aktiv"-Regel aus dem
+07-10-Lock). Deaktivierte/nicht-hinzugefügte Entitäten fallen raus; Metadaten (llm_name/aliases)
+kommen aus dem Store, mit Fallback auf HA-friendly_name / Registry-Aliase.
 """
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
-from homeassistant.components import conversation
-from homeassistant.components.homeassistant.exposed_entities import async_get_entity_settings
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import (area_registry as ar, device_registry as dr,
                                    entity_registry as er, floor_registry as fr)
 
 from .hestia_cap import House, Area, Entity
-
-
-def _explicitly_exposed(hass: HomeAssistant, entity_id: str) -> bool:
-    """Nur EXPLIZITE conversation-Opt-ins (ignoriert HAs breite Domain-Defaults).
-
-    HAs `async_should_expose` würde default-exposed Domains (light/switch/…) fleet-weit
-    einblenden → 100+-Entitäten-Prompt, den das kompakte LLM nicht sauber trägt. Wir bauen
-    ein EIGENES, kuratiertes Set (Benni-Lock) und nehmen darum nur, was der Nutzer bewusst
-    exponiert hat. Config-Override (CONF_EXPOSURE) kann zusätzlich `expose` setzen."""
-    try:
-        settings = async_get_entity_settings(hass, entity_id)
-    except HomeAssistantError:
-        return False
-    return bool(settings.get(conversation.DOMAIN, {}).get("should_expose"))
+from .store import get_store
 
 
 def _friendly_name(hass: HomeAssistant, entry) -> str:
@@ -61,20 +46,25 @@ def _entity_area_id(entry, dev_reg) -> str | None:
     return None
 
 
-def build_exposure(hass: HomeAssistant, override: dict | None = None) -> dict[str, dict]:
-    """entity_id -> {llm_name, aliases, domain, area, floor, expose}. Nur expose==True landet
-    im Haus/Resolver. `override` (CONF_EXPOSURE) darf Felder pro entity_id überschreiben."""
+def build_exposure(hass: HomeAssistant) -> dict[str, dict]:
+    """entity_id -> {llm_name, aliases, domain, area, floor, expose}. Quelle = Config-Store.
+
+    Membership = `added AND active`. Deaktivierte/nicht-hinzugefügte Records fallen raus. Namen
+    aus dem Store (leer → HA-friendly_name), Aliase aus dem Store (leer → Registry-Aliase).
+    **Offline-Durchreiche:** aktuell `unavailable`/`disabled` schließt NICHT aus — ein bewusst
+    aktives Gerät bleibt dem Modell präsentiert (die Offline-Warnung ist reine UI-Sache)."""
+    store = get_store(hass)
     ent_reg = er.async_get(hass)
     area_reg = ar.async_get(hass)
     floor_reg = fr.async_get(hass)
     dev_reg = dr.async_get(hass)
-    override = override or {}
 
     out: dict[str, dict] = {}
-    for entry in ent_reg.entities.values():
-        if entry.hidden_by is not None or entry.disabled:
+    for eid, srec in store.all_records().items():
+        if not (srec["added"] and srec["active"]):
             continue
-        if not _explicitly_exposed(hass, entry.entity_id):
+        entry = ent_reg.async_get(eid)
+        if entry is None:        # Entität aus HA verschwunden → nicht auflösbar, überspringen
             continue
         area_id = _entity_area_id(entry, dev_reg)
         area_name = floor_name = None
@@ -85,19 +75,14 @@ def build_exposure(hass: HomeAssistant, override: dict | None = None) -> dict[st
                 if area.floor_id:
                     fl = floor_reg.async_get_floor(area.floor_id)
                     floor_name = fl.name if fl else None
-        rec = {
-            "llm_name": _friendly_name(hass, entry),
-            "aliases": _aliases(entry),
-            "domain": entry.entity_id.split(".")[0],
+        out[eid] = {
+            "llm_name": srec["llm_name"] or _friendly_name(hass, entry),
+            "aliases": list(srec["aliases"]) or _aliases(entry),
+            "domain": eid.split(".")[0],
             "area": area_name,
             "floor": floor_name,
             "expose": True,
         }
-        ov = override.get(entry.entity_id)
-        if isinstance(ov, dict):
-            rec.update({k: v for k, v in ov.items() if k in rec})
-        if rec["expose"]:
-            out[entry.entity_id] = rec
     return out
 
 

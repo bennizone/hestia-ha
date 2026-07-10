@@ -23,7 +23,7 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, in
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_EXPOSURE, CONF_DENY,
+from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_DENY,
                     CONF_UNSAFE_MODE, DEFAULT_LOOP_DEPTH, DEFAULT_DENY, DEFAULT_UNSAFE_MODE,
                     LOOP_EXHAUSTED_TEXTS, effective_deny)
 from .hestia_cap import (TOOL_CALL_START, STOP, all_tool_defs, parse, render_prompt,
@@ -102,7 +102,7 @@ class HestiaAgent(conversation.ConversationEntity):
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         # 1. Haus + Exposure aus der HA-Registry; System-Prompt (train==serve-Naht)
-        exposure = build_exposure(self.hass, self.entry.data.get(CONF_EXPOSURE))
+        exposure = build_exposure(self.hass)   # Quelle = Config-Store (Panel-kuratiert)
         house = build_house(self.hass, exposure)
         system_content = render_system_content(house)   # statischer, cachebarer Präfix (ohne Raum/Zeit)
         live_context = self._live_context(user_input)    # volatiler Schwanz = 2. System-Message

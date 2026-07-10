@@ -1,0 +1,100 @@
+"""Exposure-Metadaten-Store (HAs `.storage` → automatisch im HA-Backup).
+
+Eigener Store (nicht bloß am Label), damit Metadaten das **Deaktivieren überleben**
+(Benni-Lock: Bettheizung im Sommer abgebaut → deaktivieren → im Winter 1 Klick zurück,
+ohne Name/Aliase/Beschreibung neu zu kuratieren).
+
+Drei Zustände pro Gerät = zwei Flags:
+  - **Nicht hinzugefügt** → kein Record (bzw. `added=False`). Taucht nur im Add-Dialog auf.
+  - **Aktiv**         → `added=True, active=True`  → dem Modell präsentiert (Sysprompt-Membership).
+  - **Deaktiviert**   → `added=True, active=False` → Metadaten bleiben, unsichtbar fürs Modell,
+                        KEINE Offline-Warnung.
+
+Sysprompt-Membership = `added AND active` (s. house_builder.build_exposure).
+"""
+from __future__ import annotations
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
+
+from .const import DOMAIN
+
+STORAGE_KEY = "hestia.exposure"
+STORAGE_VERSION = 1
+
+# Feld-Defaults eines Entity-Records. `added`/`active` sind die Zustands-Flags;
+# der Rest sind kuratierbare Metadaten, die das Deaktivieren überleben.
+_RECORD_DEFAULTS: dict = {
+    "added": False,
+    "active": True,
+    "llm_name": "",      # leer → house_builder fällt auf HA-friendly_name zurück
+    "aliases": [],
+    "description": "",
+}
+# Nur diese Felder dürfen per WS-`set` gepatcht werden.
+PATCHABLE = frozenset(_RECORD_DEFAULTS.keys())
+
+
+class ExposureStore:
+    """Dünner async-Wrapper um HAs `Store` mit In-Memory-Cache.
+
+    Datenform on-disk: `{"entities": {entity_id: {added, active, llm_name, aliases, description}}}`.
+    """
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+        self._store: Store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._data: dict[str, dict] | None = None   # entity_id -> record
+
+    async def async_load(self) -> dict[str, dict]:
+        if self._data is None:
+            raw = await self._store.async_load()
+            self._data = dict((raw or {}).get("entities", {}))
+        return self._data
+
+    def _record(self, entity_id: str) -> dict:
+        """Record mit aufgefüllten Defaults (nie None). Kopie — kein Live-Alias."""
+        base = dict(_RECORD_DEFAULTS)
+        base.update(self._data.get(entity_id, {}))
+        return base
+
+    def get(self, entity_id: str) -> dict:
+        """Effektiver Record (Defaults aufgefüllt). Voraussetzung: async_load lief."""
+        assert self._data is not None, "async_load() zuerst aufrufen"
+        return self._record(entity_id)
+
+    def all_records(self) -> dict[str, dict]:
+        """entity_id -> effektiver Record, für jeden hinzugefügten Eintrag."""
+        assert self._data is not None, "async_load() zuerst aufrufen"
+        return {eid: self._record(eid) for eid in self._data}
+
+    def is_member(self, entity_id: str) -> bool:
+        """Sysprompt-Membership: hinzugefügt UND aktiv."""
+        rec = self.get(entity_id)
+        return bool(rec["added"] and rec["active"])
+
+    async def async_set(self, entity_id: str, patch: dict) -> dict:
+        """Nur PATCHABLE-Felder mergen, persistieren, effektiven Record zurückgeben.
+
+        `aliases` wird auf saubere String-Liste normalisiert. Ein Record mit `added=False`
+        bleibt erhalten (Metadaten-Retention) — Aufräumen ist bewusst NICHT automatisch.
+        """
+        assert self._data is not None, "async_load() zuerst aufrufen"
+        clean = {k: v for k, v in patch.items() if k in PATCHABLE}
+        if "aliases" in clean:
+            clean["aliases"] = [a.strip() for a in clean["aliases"]
+                                if isinstance(a, str) and a.strip()]
+        cur = dict(self._data.get(entity_id, {}))
+        cur.update(clean)
+        self._data[entity_id] = cur
+        await self._async_save()
+        return self._record(entity_id)
+
+    async def _async_save(self) -> None:
+        await self._store.async_save({"entities": self._data})
+
+
+def get_store(hass: HomeAssistant, entry_id: str | None = None) -> ExposureStore:
+    """Den (einen) ExposureStore aus hass.data holen. Single-Instance je HA-Config."""
+    bucket = hass.data.setdefault(DOMAIN, {})
+    return bucket["_store"]

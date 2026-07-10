@@ -1,0 +1,145 @@
+"""WebSocket-API fürs Hestia-Panel (Exposure-Kuratierung).
+
+Drei Befehle, alle admin-only (Kuratierung = bewusste Admin-Arbeit):
+  - `hestia/exposure/list`       → hinzugefügte Entitäten, angereichert + **Live-State** (fürs ⚠).
+  - `hestia/exposure/candidates` → adressierbare, noch NICHT hinzugefügte Entitäten (Add-Dialog).
+  - `hestia/exposure/set`        → `{entity_id, patch}` mergen+persistieren, angereicherten Record zurück.
+
+Der „Config-Compiler"-Gedanke lebt hier nur als *Lesen/Schreiben*; die eigentliche Übersetzung
+in Sysprompt/Executor macht house_builder (Membership = `added AND active`).
+"""
+from __future__ import annotations
+
+import voluptuous as vol
+
+from homeassistant.components import websocket_api
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import (area_registry as ar, device_registry as dr,
+                                   entity_registry as er, floor_registry as fr)
+
+from .const import DOMAIN
+from .house_builder import _aliases, _entity_area_id, _friendly_name
+from .store import PATCHABLE, get_store
+
+# Live-States, die „nicht erreichbar" bedeuten (→ ⚠ im Panel, nur wenn aktiv).
+_UNAVAILABLE = ("unavailable", "unknown")
+
+# Entity-Categories, die im Add-Dialog NICHT auftauchen sollen (Config/Diagnose-Krempel).
+_HIDDEN_CATEGORIES = ("config", "diagnostic")
+
+
+@callback
+def _area_floor(hass: HomeAssistant, entry, dev_reg, area_reg, floor_reg):
+    """(area_name, floor_name) für eine Registry-Entity — beide können None sein."""
+    area_id = _entity_area_id(entry, dev_reg)
+    if not area_id:
+        return None, None
+    area = area_reg.async_get_area(area_id)
+    if not area:
+        return None, None
+    floor_name = None
+    if area.floor_id:
+        fl = floor_reg.async_get_floor(area.floor_id)
+        floor_name = fl.name if fl else None
+    return area.name, floor_name
+
+
+@callback
+def _enrich(hass: HomeAssistant, entry, record: dict, regs) -> dict:
+    """Registry-Entry + Store-Record → Panel-Zeile (eine Wahrheit fürs Frontend)."""
+    dev_reg, area_reg, floor_reg = regs
+    area, floor = _area_floor(hass, entry, dev_reg, area_reg, floor_reg)
+    st = hass.states.get(entry.entity_id)
+    raw = st.state if st else None
+    ha_name = _friendly_name(hass, entry)
+    return {
+        "entity_id": entry.entity_id,
+        "domain": entry.entity_id.split(".")[0],
+        "area": area,
+        "floor": floor,
+        "ha_name": ha_name,                         # HAs friendly_name (Default/Referenz)
+        "llm_name": record["llm_name"] or ha_name,  # effektiver Modell-Name (leer → HA-Name)
+        "aliases": record["aliases"],
+        "description": record["description"],
+        "added": record["added"],
+        "active": record["active"],
+        "available": bool(st) and raw not in _UNAVAILABLE,
+        "state": raw,
+    }
+
+
+@websocket_api.websocket_command({vol.Required("type"): "hestia/exposure/list"})
+@websocket_api.require_admin
+@callback
+def ws_list(hass: HomeAssistant, connection, msg) -> None:
+    """Alle hinzugefügten Entitäten (added=True), angereichert + Live-State."""
+    store = get_store(hass)
+    ent_reg = er.async_get(hass)
+    regs = (dr.async_get(hass), ar.async_get(hass), fr.async_get(hass))
+    rows = []
+    for eid, rec in store.all_records().items():
+        if not rec["added"]:
+            continue
+        entry = ent_reg.async_get(eid)
+        if entry is None:      # Entität aus HA verschwunden → Record bleibt, aber nicht listbar
+            continue
+        rows.append(_enrich(hass, entry, rec, regs))
+    connection.send_result(msg["id"], {"entities": rows})
+
+
+@websocket_api.websocket_command({vol.Required("type"): "hestia/exposure/candidates"})
+@websocket_api.require_admin
+@callback
+def ws_candidates(hass: HomeAssistant, connection, msg) -> None:
+    """Adressierbare, noch nicht hinzugefügte Entitäten (für den Add-Dialog)."""
+    store = get_store(hass)
+    ent_reg = er.async_get(hass)
+    regs = (dr.async_get(hass), ar.async_get(hass), fr.async_get(hass))
+    rows = []
+    for entry in ent_reg.entities.values():
+        if store.get(entry.entity_id)["added"]:
+            continue
+        if entry.hidden_by is not None or entry.disabled:
+            continue
+        if entry.entity_category in _HIDDEN_CATEGORIES:
+            continue
+        rows.append(_enrich(hass, entry, store.get(entry.entity_id), regs))
+    connection.send_result(msg["id"], {"entities": rows})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hestia/exposure/set",
+    vol.Required("entity_id"): str,
+    vol.Required("patch"): {vol.In(PATCHABLE): object},
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_set(hass: HomeAssistant, connection, msg) -> None:
+    """Patch mergen + persistieren. Beim Erst-Add: Aliase aus der HA-Registry seeden."""
+    store = get_store(hass)
+    ent_reg = er.async_get(hass)
+    eid = msg["entity_id"]
+    entry = ent_reg.async_get(eid)
+    if entry is None:
+        connection.send_error(msg["id"], "not_found", f"Unbekannte Entität: {eid}")
+        return
+
+    patch = dict(msg["patch"])
+    # Erst-Add: kein Record da UND wird gerade hinzugefügt → Registry-Aliase als Startpunkt.
+    fresh = eid not in store.all_records()
+    if fresh and patch.get("added") and "aliases" not in patch:
+        reg_aliases = _aliases(entry)
+        if reg_aliases:
+            patch["aliases"] = reg_aliases
+
+    rec = await store.async_set(eid, patch)
+    regs = (dr.async_get(hass), ar.async_get(hass), fr.async_get(hass))
+    connection.send_result(msg["id"], _enrich(hass, entry, rec, regs))
+
+
+@callback
+def async_register(hass: HomeAssistant) -> None:
+    """Alle Hestia-WS-Befehle registrieren (idempotent — HA dedupliziert nach type)."""
+    websocket_api.async_register_command(hass, ws_list)
+    websocket_api.async_register_command(hass, ws_candidates)
+    websocket_api.async_register_command(hass, ws_set)
