@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import (area_registry as ar, device_registry as dr,
                                    entity_registry as er, floor_registry as fr)
 
+from . import helpers
 from .const import DOMAIN
 from .house_builder import _aliases, _entity_area_id, _friendly_name
 from .store import PATCHABLE, get_store
@@ -139,9 +140,61 @@ async def ws_set(hass: HomeAssistant, connection, msg) -> None:
     connection.send_result(msg["id"], _enrich(hass, entry, rec, regs))
 
 
+# ── Helfer (READ-Aggregation, native HA-Helfer via Config-Flow — helpers.py) ──
+@websocket_api.websocket_command({vol.Required("type"): "hestia/helper/list"})
+@websocket_api.require_admin
+@callback
+def ws_helper_list(hass: HomeAssistant, connection, msg) -> None:
+    """Von uns verwaltbare Helfer (min_max/group-Config-Entries)."""
+    connection.send_result(msg["id"], {"helpers": helpers.list_helpers(hass)})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hestia/helper/create",
+    vol.Required("kind"): vol.In(("numeric", "binary")),
+    vol.Required("name"): str,
+    vol.Required("entities"): [str],
+    vol.Optional("agg", default="mean"): str,      # numeric: mean/min/max/median
+    vol.Optional("mode", default="any"): vol.In(("any", "all")),   # binary: ODER/UND
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_helper_create(hass: HomeAssistant, connection, msg) -> None:
+    """Nativen HA-Helfer anlegen (Config-Flow server-seitig gefahren)."""
+    if not msg["entities"]:
+        connection.send_error(msg["id"], "no_entities", "Mindestens eine Quell-Entität wählen.")
+        return
+    try:
+        rec = await helpers.async_create(hass, msg["kind"], msg["name"], msg["entities"],
+                                         agg=msg["agg"], mode=msg["mode"])
+    except Exception as e:  # noqa: BLE001 — Flow-Fehler → ehrliche WS-Fehlermeldung
+        connection.send_error(msg["id"], "create_failed", str(e))
+        return
+    connection.send_result(msg["id"], rec)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hestia/helper/delete",
+    vol.Required("entry_id"): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_helper_delete(hass: HomeAssistant, connection, msg) -> None:
+    """Helfer-Config-Entry entfernen."""
+    try:
+        await helpers.async_delete(hass, msg["entry_id"])
+    except Exception as e:  # noqa: BLE001
+        connection.send_error(msg["id"], "delete_failed", str(e))
+        return
+    connection.send_result(msg["id"], {"removed": msg["entry_id"]})
+
+
 @callback
 def async_register(hass: HomeAssistant) -> None:
     """Alle Hestia-WS-Befehle registrieren (idempotent — HA dedupliziert nach type)."""
     websocket_api.async_register_command(hass, ws_list)
     websocket_api.async_register_command(hass, ws_candidates)
     websocket_api.async_register_command(hass, ws_set)
+    websocket_api.async_register_command(hass, ws_helper_list)
+    websocket_api.async_register_command(hass, ws_helper_create)
+    websocket_api.async_register_command(hass, ws_helper_delete)
