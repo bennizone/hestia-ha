@@ -156,11 +156,15 @@ def ws_helper_list(hass: HomeAssistant, connection, msg) -> None:
     vol.Required("entities"): [str],
     vol.Optional("agg", default="mean"): str,      # numeric: mean/min/max/median
     vol.Optional("mode", default="any"): vol.In(("any", "all")),   # binary: ODER/UND
+    vol.Optional("area_id"): vol.Any(str, None),   # optionale Area (Benni-Lock: im UI wählbar)
 })
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_helper_create(hass: HomeAssistant, connection, msg) -> None:
-    """Nativen HA-Helfer anlegen (Config-Flow server-seitig gefahren)."""
+    """Nativen HA-Helfer anlegen → Area setzen → direkt aktiv exposen (Benni-Lock: „1 Klick").
+
+    Trennung: helpers.py = native-Helfer-Mechanik (Config-Flow); hier die Orchestrierung
+    (Area via Entity-Registry, Aufnahme in den Exposure-Store als added+active)."""
     if not msg["entities"]:
         connection.send_error(msg["id"], "no_entities", "Mindestens eine Quell-Entität wählen.")
         return
@@ -170,6 +174,12 @@ async def ws_helper_create(hass: HomeAssistant, connection, msg) -> None:
     except Exception as e:  # noqa: BLE001 — Flow-Fehler → ehrliche WS-Fehlermeldung
         connection.send_error(msg["id"], "create_failed", str(e))
         return
+    eid = rec.get("entity_id")
+    if eid and msg.get("area_id"):                 # Area auf die Helfer-Entität setzen
+        er.async_get(hass).async_update_entity(eid, area_id=msg["area_id"])
+    if eid:                                        # „Anlegen & hinzufügen": aktiv in den Store
+        await get_store(hass).async_set(eid, {"added": True, "active": True})
+        rec["exposed"] = True
     connection.send_result(msg["id"], rec)
 
 
@@ -180,12 +190,18 @@ async def ws_helper_create(hass: HomeAssistant, connection, msg) -> None:
 @websocket_api.require_admin
 @websocket_api.async_response
 async def ws_helper_delete(hass: HomeAssistant, connection, msg) -> None:
-    """Helfer-Config-Entry entfernen."""
+    """Helfer-Config-Entry entfernen — inkl. Exposure-Store-Rest (kein Zombie-Record)."""
+    eid = helpers.entity_of_entry(hass, msg["entry_id"])   # vor dem Entfernen merken
     try:
         await helpers.async_delete(hass, msg["entry_id"])
     except Exception as e:  # noqa: BLE001
         connection.send_error(msg["id"], "delete_failed", str(e))
         return
+    if eid:   # Helfer-Entität ist weg → Store-Record deaktivieren (Metadaten-Retention sinnlos)
+        try:
+            await get_store(hass).async_set(eid, {"added": False, "active": False})
+        except Exception:  # noqa: BLE001
+            pass
     connection.send_result(msg["id"], {"removed": msg["entry_id"]})
 
 

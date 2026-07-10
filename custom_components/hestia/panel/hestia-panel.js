@@ -300,6 +300,34 @@ button, input, textarea { font: inherit; color: inherit; }
 .cand .area-tag { font-size: 11px; color: var(--ink-3); margin-right: 8px; }
 .cand .add-btn { padding: 5px 11px; font-size: 12.5px; }
 
+/* ── Helfer-View ── */
+.content.single { grid-template-columns: 1fr; }
+.hrow { display: grid; grid-template-columns: 22px minmax(0,1.6fr) auto 84px auto; align-items: center; gap: 14px; padding: 11px 15px; border-top: 1px solid var(--line); }
+.hrow:first-child { border-top: none; }
+.hrow .dom { color: var(--ink-3); display: grid; place-items: center; }
+.hrow .dom svg { width: 18px; height: 18px; }
+.hval { font-variant-numeric: tabular-nums; font-weight: 560; color: var(--ink); white-space: nowrap; text-align: right; }
+.hval small { color: var(--ink-3); font-weight: 400; }
+.htype { font-size: 11.5px; color: var(--ink-3); text-align: right; }
+.hdel { align-self: center; white-space: nowrap; }
+.hc-body { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 16px; }
+.hc-foot { padding: 14px 20px; border-top: 1px solid var(--line); flex: none; }
+.hc-foot .btn { width: 100%; justify-content: center; }
+.hc-search { margin: 0 0 8px !important; }
+.seg { display: inline-flex; gap: 4px; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 3px; flex-wrap: wrap; }
+.seg-b { border: none; background: none; color: var(--ink-2); padding: 6px 12px; border-radius: 6px; cursor: pointer; font-weight: 500; font-size: 12.5px; }
+.seg-b.on { background: var(--accent); color: var(--accent-ink); }
+.seg-b:hover:not(.on) { color: var(--ink); }
+.checklist { max-height: 210px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--ground); }
+.chk { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 8px 11px; cursor: pointer; border-top: 1px solid var(--line); }
+.chk:first-child { border-top: none; }
+.chk:hover { background: var(--surface-2); }
+.chk.on { background: var(--accent-soft); }
+.chk input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
+.chk-nm { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chk-eid { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+select.inp { cursor: pointer; }
+
 .loading { padding: 60px 20px; text-align: center; color: var(--ink-3); }
 
 @media (max-width: 1040px) {
@@ -347,6 +375,11 @@ class HestiaPanel extends HTMLElement {
     this._candSearch = "";
     this._loading = true;
     this._error = null;
+    this._view = "exposure";    // exposure | helpers
+    this._helpers = null;       // Helfer-Liste (min_max/group)
+    this._areas = [];           // HA-Areas (Anlege-Dialog)
+    this._hcDraft = null;       // Helfer-Anlege-Entwurf
+    this._hcSearch = "";
   }
 
   set hass(hass) {
@@ -388,9 +421,9 @@ class HestiaPanel extends HTMLElement {
           </div>
           <nav class="nav">
             <div class="group-label">Sichtbarkeit &amp; Sprache</div>
-            <a class="active">${svg('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>', 17)}<span class="lbl">Exposure</span><span class="tag" id="navcount"></span></a>
-            <a class="soon">${svg('<path d="M4 7h11"/><path d="M19 7h1"/><circle cx="17" cy="7" r="2"/><path d="M4 17h1"/><path d="M9 17h11"/><circle cx="7" cy="17" r="2"/>', 17)}<span class="lbl">Limits &amp; Mapping</span><span class="tag">bald</span></a>
-            <a class="soon">${svg('<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>', 17)}<span class="lbl">Helfer</span><span class="tag">bald</span></a>
+            <a class="nav-link${this._view === "exposure" ? " active" : ""}" data-view="exposure">${svg('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>', 17)}<span class="lbl">Exposure</span><span class="tag" id="navcount"></span></a>
+            <a class="soon">${svg('<path d="M4 7h11"/><path d="M19 7h1"/><circle cx="17" cy="7" r="2"/><path d="M4 17h1"/><path d="M9 17h11"/><circle cx="7" cy="17" r="2"/>', 17)}<span class="lbl">Limits &amp; Mapping</span><span class="tag">im Detail</span></a>
+            <a class="nav-link${this._view === "helpers" ? " active" : ""}" data-view="helpers">${svg('<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>', 17)}<span class="lbl">Helfer</span><span class="tag" id="navhcount"></span></a>
             <div class="group-label">Verhalten</div>
             <a class="soon">${svg('<path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M16 9a4 4 0 0 1 0 6"/>', 17)}<span class="lbl">Medien</span><span class="tag">bald</span></a>
             <a class="soon">${svg('<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>', 17)}<span class="lbl">Custom-Sätze</span><span class="tag">bald</span></a>
@@ -402,40 +435,83 @@ class HestiaPanel extends HTMLElement {
             <button class="rail-toggle" id="railBtn" title="Menü ein-/ausklappen">${svg('<path d="m15 6-6 6 6 6"/>', 24)}</button>
           </div>
         </aside>
-        <div class="main">
-          <header class="topbar">
-            <div class="titlewrap">
-              <div class="eyebrow">Sichtbarkeit &amp; Sprache</div>
-              <h1>Exposure</h1>
-              <p>Welche Geräte Hestia kennt — und unter welchem Namen. Du fügst jedes Gerät <b>bewusst hinzu</b>; <b>Deaktivieren</b> behält die Einrichtung, blendet es aber beim Modell aus. Kein Auto-Import, kein Abgleich der dir etwas wegnimmt.</p>
-            </div>
-            <div class="actions">
-              <button class="btn primary" id="addBtn">${svg('<path d="M12 5v14M5 12h14"/>', 24)}<span>Gerät hinzufügen</span></button>
-            </div>
-          </header>
-          <div class="content" id="content"></div>
-        </div>
+        <div class="main" id="main"></div>
       </div>
       <div class="scrim detail" id="scrimDetail"></div>
       <div class="scrim" id="scrimAdd"></div>
       <div class="modal" id="addModal"></div>
+      <div class="scrim" id="scrimHelper"></div>
+      <div class="modal" id="helperModal"></div>
     `;
-    this._content = this._root.querySelector("#content");
+    this._main = this._root.querySelector("#main");
     this._root.querySelector("#railBtn").addEventListener("click", () => {
       this._rail = !this._rail;
       this._root.querySelector("#app").classList.toggle("rail", this._rail);
     });
-    this._root.querySelector("#addBtn").addEventListener("click", () => this._openAdd());
+    this._root.querySelectorAll(".nav-link").forEach((a) =>
+      a.addEventListener("click", () => this._switchView(a.dataset.view)));
     this._root.querySelector("#scrimDetail").addEventListener("click", () => this._closeSheet());
     this._root.querySelector("#scrimAdd").addEventListener("click", () => this._closeAdd());
+    this._root.querySelector("#scrimHelper").addEventListener("click", () => this._closeHelperCreate());
     this.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { this._closeSheet(); this._closeAdd(); }
+      if (e.key === "Escape") { this._closeSheet(); this._closeAdd(); this._closeHelperCreate(); }
     });
+    this._renderView();
   }
 
-  // ── Hauptbereich (Liste + Detail) ──
+  // ── View-Routing (Topbar + Content je View) ──
+  _switchView(v) {
+    if (v === this._view) return;
+    this._view = v;
+    this._root.querySelectorAll(".nav-link").forEach((a) =>
+      a.classList.toggle("active", a.dataset.view === v));
+    this._renderView();
+    if (v === "helpers") { if (!this._helpers) this._loadHelpers(); else this._renderHelpers(); }
+    else { if (!this._rows) this._loadRows(); else this._renderExposure(); }
+  }
+
+  _renderView() {
+    if (this._view === "helpers") {
+      this._main.innerHTML = `
+        <header class="topbar">
+          <div class="titlewrap">
+            <div class="eyebrow">Sichtbarkeit &amp; Sprache</div>
+            <h1>Helfer</h1>
+            <p>Mehrere Sensoren zu <b>einem</b> zusammenfassen, den Hestia wie einen normalen Sensor liest — <b>native HA-Helfer</b>, das Modell rechnet nichts. Numerisch (Ø·min·max über Werte) oder binär (ODER·UND über Kontakte). Beim Anlegen direkt aktiv &amp; sichtbar.</p>
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="createHelperBtn">${svg('<path d="M12 5v14M5 12h14"/>', 24)}<span>Helfer anlegen</span></button>
+          </div>
+        </header>
+        <div class="content single" id="content"></div>`;
+      this._main.querySelector("#createHelperBtn").addEventListener("click", () => this._openHelperCreate());
+    } else {
+      this._main.innerHTML = `
+        <header class="topbar">
+          <div class="titlewrap">
+            <div class="eyebrow">Sichtbarkeit &amp; Sprache</div>
+            <h1>Exposure</h1>
+            <p>Welche Geräte Hestia kennt — und unter welchem Namen. Du fügst jedes Gerät <b>bewusst hinzu</b>; <b>Deaktivieren</b> behält die Einrichtung, blendet es aber beim Modell aus. Kein Auto-Import, kein Abgleich der dir etwas wegnimmt.</p>
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="addBtn">${svg('<path d="M12 5v14M5 12h14"/>', 24)}<span>Gerät hinzufügen</span></button>
+          </div>
+        </header>
+        <div class="content" id="content"></div>`;
+      this._main.querySelector("#addBtn").addEventListener("click", () => this._openAdd());
+    }
+    this._content = this._main.querySelector("#content");
+  }
+
+  // Dispatcher — Exposure-Callsites rufen weiter _renderMain(); View entscheidet.
   _renderMain() {
-    if (!this._content) return;
+    if (this._view === "helpers") this._renderHelpers();
+    else this._renderExposure();
+  }
+
+  // ── Hauptbereich Exposure (Liste + Detail) ──
+  _renderExposure() {
+    if (!this._content || this._view !== "exposure") return;
     if (this._loading) {
       this._content.innerHTML = `<div class="col"><div class="loading">Lade Exposure …</div></div><aside class="col detail empty"></aside>`;
       return;
@@ -826,6 +902,204 @@ class HestiaPanel extends HTMLElement {
     this._addOpen = false;
     this._root.querySelector("#scrimAdd").classList.remove("on");
     this._root.querySelector("#addModal").classList.remove("on");
+  }
+
+  // ══════════════════ Helfer-View ══════════════════
+  async _loadHelpers() {
+    this._loading = true; this._error = null; this._renderHelpers();
+    try {
+      const [h, a] = await Promise.all([
+        this._hass.callWS({ type: "hestia/helper/list" }),
+        this._hass.callWS({ type: "config/area_registry/list" }),
+      ]);
+      this._helpers = h.helpers || [];
+      this._areas = a || [];
+    } catch (e) {
+      this._error = (e && e.message) || String(e);
+      this._helpers = [];
+    }
+    this._loading = false;
+    this._renderHelpers();
+  }
+
+  _hState(eid) {
+    const s = eid && this._hass && this._hass.states[eid];
+    if (!s) return { val: "—", unit: "" };
+    return { val: s.state, unit: (s.attributes && s.attributes.unit_of_measurement) || "" };
+  }
+
+  _renderHelpers() {
+    if (!this._content || this._view !== "helpers") return;
+    const navh = this._root.querySelector("#navhcount");
+    if (this._loading) { this._content.innerHTML = `<div class="col"><div class="loading">Lade Helfer …</div></div>`; return; }
+    const list = this._helpers || [];
+    if (navh) navh.textContent = list.length ? String(list.length) : "";
+
+    const numeric = list.filter((h) => h.domain === "min_max");
+    const binary = list.filter((h) => h.domain === "group");
+    const errHtml = this._error
+      ? `<div class="banner" style="border-color:var(--danger);color:var(--danger)">${svg('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>')}<div><b>Fehler:</b> ${esc(this._error)}</div></div>`
+      : "";
+
+    const hrow = (h) => {
+      const isNum = h.domain === "min_max";
+      const icon = isNum ? '<path d="M12 20V8M18 20V4M6 20v-6"/>' : '<path d="m9 12 2 2 4-4"/><rect x="3" y="4" width="18" height="16" rx="3"/>';
+      const st = this._hState(h.entity_id);
+      return `<div class="hrow">
+        <span class="dom">${svg(icon)}</span>
+        <div class="namecell"><div class="nm">${esc(h.name)}</div><div class="eid">${esc(h.entity_id || "—")}</div></div>
+        <div class="hval">${esc(st.val)}${st.unit ? ` <small>${esc(st.unit)}</small>` : ""}</div>
+        <div class="htype">${isNum ? "Numerisch" : "Binär"}</div>
+        <button class="remove-link hdel" data-del="${esc(h.entry_id)}">Löschen</button>
+      </div>`;
+    };
+    const section = (title, hint, arr) => arr.length ? `<section class="area">
+        <div class="area-head"><h3>${title}</h3><span class="floor">${hint}</span><span class="rule"></span><span class="count">${arr.length}</span></div>
+        <div class="rows">${arr.map(hrow).join("")}</div></section>` : "";
+
+    const body = !list.length
+      ? `<div class="empty-state">${svg('<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>', 34)}
+           <b>Noch keine Helfer.</b>Fasse mehrere Sensoren zu einem zusammen — z. B. „Arbeitszimmer-Temperatur" als Durchschnitt mehrerer Thermometer.</div>`
+      : `${section("Numerisch", "Ø · min · max · Median", numeric)}${section("Binär", "ODER · UND", binary)}`;
+
+    this._content.innerHTML = `<div class="col">
+      <div class="banner">${svg('<circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/>')}
+        <div><b>Native HA-Helfer:</b> angelegt über HAs eigene Helfer-Integrationen (min_max / group). Das Modell sieht einen ganz normalen Sensor — es rechnet oder rät nichts. Du siehst &amp; verwaltest sie auch direkt in Home&nbsp;Assistant.</div></div>
+      ${errHtml}${body}</div>`;
+
+    this._content.querySelectorAll(".hdel").forEach((b) =>
+      b.addEventListener("click", () => this._deleteHelper(b.dataset.del)));
+  }
+
+  async _deleteHelper(entryId) {
+    const h = (this._helpers || []).find((x) => x.entry_id === entryId);
+    if (!confirm(`Helfer „${h ? h.name : ""}" löschen? Die zugrundeliegenden Sensoren bleiben unberührt.`)) return;
+    try {
+      await this._hass.callWS({ type: "hestia/helper/delete", entry_id: entryId });
+      this._helpers = (this._helpers || []).filter((x) => x.entry_id !== entryId);
+      this._renderHelpers();
+    } catch (e) {
+      alert("Löschen fehlgeschlagen: " + ((e && e.message) || e));
+    }
+  }
+
+  // ── Helfer anlegen (Modal) ──
+  _openHelperCreate() {
+    this._hcDraft = { kind: "numeric", name: "", entities: [], agg: "mean", mode: "any", area_id: "" };
+    this._hcSearch = "";
+    this._root.querySelector("#scrimHelper").classList.add("on");
+    this._root.querySelector("#helperModal").classList.add("on");
+    this._renderHelperModal();
+  }
+
+  _closeHelperCreate() {
+    this._root.querySelector("#scrimHelper").classList.remove("on");
+    this._root.querySelector("#helperModal").classList.remove("on");
+    this._hcDraft = null;
+  }
+
+  // Quell-Kandidaten je Sorte aus hass.states (numeric: sensor/number/input_number; binary: binary_sensor).
+  _hcSources() {
+    const doms = this._hcDraft.kind === "numeric" ? ["sensor", "number", "input_number"] : ["binary_sensor"];
+    const q = this._hcSearch.trim().toLowerCase();
+    const out = [];
+    for (const eid in (this._hass.states || {})) {
+      const dom = eid.split(".")[0];
+      if (!doms.includes(dom)) continue;
+      const s = this._hass.states[eid];
+      const nm = (s.attributes && s.attributes.friendly_name) || eid;
+      if (q && !nm.toLowerCase().includes(q) && !eid.toLowerCase().includes(q)) continue;
+      out.push({ eid, nm, unit: (s.attributes && s.attributes.unit_of_measurement) || "" });
+    }
+    out.sort((a, b) => a.nm.localeCompare(b.nm));
+    return out;
+  }
+
+  _renderHelperModal() {
+    const modal = this._root.querySelector("#helperModal");
+    const d = this._hcDraft;
+    const isNum = d.kind === "numeric";
+    const seg = (key, cur, opts) => `<div class="seg">${opts.map(([k, l]) =>
+      `<button class="seg-b${cur === k ? " on" : ""}" data-${key}="${k}">${l}</button>`).join("")}</div>`;
+    const src = this._hcSources();
+    const checklist = src.length ? src.map((c) => {
+      const on = d.entities.includes(c.eid);
+      return `<label class="chk${on ? " on" : ""}"><input type="checkbox" data-ent="${esc(c.eid)}"${on ? " checked" : ""}>
+        <span class="chk-nm">${esc(c.nm)}</span><span class="chk-eid">${esc(c.eid)}</span></label>`;
+    }).join("") : `<div class="empty-state" style="padding:24px">Keine passenden ${isNum ? "Sensoren/Regler" : "Binärsensoren"} gefunden.</div>`;
+
+    const areaOpts = `<option value="">— keine Area —</option>` +
+      (this._areas || []).slice().sort((a, b) => a.name.localeCompare(b.name))
+        .map((a) => `<option value="${esc(a.area_id)}"${d.area_id === a.area_id ? " selected" : ""}>${esc(a.name)}</option>`).join("");
+
+    const canSave = d.name.trim() && d.entities.length;
+    modal.innerHTML = `
+      <div class="modal-head"><h2>Helfer anlegen</h2>
+        <button class="btn" id="hcClose">${svg('<path d="M18 6 6 18M6 6l12 12"/>', 15)}Schließen</button></div>
+      <div class="hc-body">
+        <div class="field"><label>Art</label>
+          ${seg("kind", d.kind, [["numeric", "Numerisch (Ø·min·max)"], ["binary", "Binär (ODER·UND)"]])}
+          <div class="hint">${isNum ? "Fasst mehrere Zahlen-Sensoren zu einem Wert zusammen." : "Fasst mehrere Kontakte/Binärsensoren zu einem Zustand zusammen."}</div>
+        </div>
+        <div class="field"><label>Name</label>
+          <input class="inp" id="hcName" value="${esc(d.name)}" placeholder="${isNum ? "z. B. Arbeitszimmer-Temperatur" : "z. B. Wohnzimmer-Präsenz"}"></div>
+        <div class="field"><label>${isNum ? "Aggregation" : "Logik"}</label>
+          ${isNum
+            ? seg("agg", d.agg, [["mean", "Durchschnitt"], ["min", "Minimum"], ["max", "Maximum"], ["median", "Median"]])
+            : seg("mode", d.mode, [["any", "ODER — irgendeiner an"], ["all", "UND — alle an"]])}
+        </div>
+        <div class="field"><label>Quell-Entitäten <span class="hint">— ${d.entities.length} gewählt</span></label>
+          <div class="search hc-search">${svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>', 16)}
+            <input placeholder="Suchen…" id="hcSearch" value="${esc(this._hcSearch)}"></div>
+          <div class="checklist">${checklist}</div>
+        </div>
+        <div class="field"><label>Area <span class="hint">— optional, für die Raum-Zuordnung</span></label>
+          <select class="inp" id="hcArea">${areaOpts}</select></div>
+      </div>
+      <div class="hc-foot">
+        <button class="btn primary" id="hcCreate"${canSave ? "" : " disabled"}>Anlegen &amp; hinzufügen</button>
+      </div>`;
+
+    modal.querySelector("#hcClose").addEventListener("click", () => this._closeHelperCreate());
+    modal.querySelectorAll("[data-kind]").forEach((b) => b.addEventListener("click", () => {
+      d.kind = b.dataset.kind; d.entities = []; d.agg = "mean"; d.mode = "any"; this._renderHelperModal();
+    }));
+    modal.querySelectorAll("[data-agg]").forEach((b) => b.addEventListener("click", () => { d.agg = b.dataset.agg; this._renderHelperModal(); }));
+    modal.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => { d.mode = b.dataset.mode; this._renderHelperModal(); }));
+    const nm = modal.querySelector("#hcName");
+    nm.addEventListener("input", (e) => { d.name = e.target.value; const c = modal.querySelector("#hcCreate"); if (c) c.disabled = !(d.name.trim() && d.entities.length); });
+    const se = modal.querySelector("#hcSearch");
+    se.addEventListener("input", (e) => { this._hcSearch = e.target.value; const p = e.target.selectionStart; this._renderHelperModal(); const n2 = modal.querySelector("#hcSearch"); if (n2) { n2.focus(); n2.setSelectionRange(p, p); } });
+    modal.querySelectorAll("[data-ent]").forEach((cb) => cb.addEventListener("change", (e) => {
+      const eid = cb.dataset.ent;
+      if (e.target.checked) { if (!d.entities.includes(eid)) d.entities.push(eid); }
+      else d.entities = d.entities.filter((x) => x !== eid);
+      cb.closest(".chk").classList.toggle("on", e.target.checked);
+      const lbl = modal.querySelector(".field label .hint"); // erste Zählung nicht kritisch
+      const c = modal.querySelector("#hcCreate"); if (c) c.disabled = !(d.name.trim() && d.entities.length);
+    }));
+    modal.querySelector("#hcArea").addEventListener("change", (e) => { d.area_id = e.target.value; });
+    modal.querySelector("#hcCreate").addEventListener("click", () => this._createHelper());
+  }
+
+  async _createHelper() {
+    const d = this._hcDraft;
+    if (!(d.name.trim() && d.entities.length)) return;
+    const btn = this._root.querySelector("#hcCreate");
+    if (btn) { btn.disabled = true; btn.textContent = "Lege an …"; }
+    const payload = { type: "hestia/helper/create", kind: d.kind, name: d.name.trim(), entities: d.entities };
+    if (d.kind === "numeric") payload.agg = d.agg; else payload.mode = d.mode;
+    if (d.area_id) payload.area_id = d.area_id;
+    try {
+      const rec = await this._hass.callWS(payload);
+      (this._helpers = this._helpers || []).push({ entry_id: rec.entry_id, entity_id: rec.entity_id, name: rec.name, domain: d.kind === "numeric" ? "min_max" : "group" });
+      this._rows = null;   // Exposure-Liste ist jetzt veraltet (Helfer wurde exposed) → beim nächsten Besuch neu laden
+      this._closeHelperCreate();
+      this._renderHelpers();
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = "Anlegen & hinzufügen"; }
+      alert("Anlegen fehlgeschlagen: " + ((e && e.message) || e));
+    }
   }
 }
 

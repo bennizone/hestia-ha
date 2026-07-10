@@ -22,7 +22,7 @@ HELPER_DOMAINS = ("min_max", "group")
 NUMERIC_AGG = ("mean", "min", "max", "median")
 
 
-def _entity_of_entry(hass: HomeAssistant, entry_id: str) -> str | None:
+def entity_of_entry(hass: HomeAssistant, entry_id: str) -> str | None:
     """entity_id der vom Config-Entry erzeugten (einen) Helfer-Entität, oder None."""
     reg = er.async_get(hass)
     for e in reg.entities.values():
@@ -59,7 +59,7 @@ async def async_create(hass: HomeAssistant, kind: str, name: str, entities: list
             f"Helfer-Flow legte keinen Eintrag an: {result.get('type')} {result.get('errors')}")
     entry = result["result"]
     await hass.async_block_till_done()          # Setup abwarten → Entität existiert in der Registry
-    return {"entry_id": entry.entry_id, "entity_id": _entity_of_entry(hass, entry.entry_id),
+    return {"entry_id": entry.entry_id, "entity_id": entity_of_entry(hass, entry.entry_id),
             "name": entry.title, "kind": kind}
 
 
@@ -69,7 +69,7 @@ def list_helpers(hass: HomeAssistant) -> list[dict]:
     for entry in hass.config_entries.async_entries():
         if entry.domain not in HELPER_DOMAINS:
             continue
-        out.append({"entry_id": entry.entry_id, "entity_id": _entity_of_entry(hass, entry.entry_id),
+        out.append({"entry_id": entry.entry_id, "entity_id": entity_of_entry(hass, entry.entry_id),
                     "name": entry.title, "domain": entry.domain})
     return out
 
