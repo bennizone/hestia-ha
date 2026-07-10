@@ -328,6 +328,24 @@ button, input, textarea { font: inherit; color: inherit; }
 .chk-eid { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
 select.inp { cursor: pointer; }
 
+/* ── Custom-Sätze ── */
+.srow { display: grid; grid-template-columns: 20px minmax(0,1.7fr) auto 96px auto; align-items: center; gap: 14px; padding: 12px 15px; border-top: 1px solid var(--line); }
+.srow:first-child { border-top: none; }
+.srow .dom { color: var(--ink-3); display: grid; place-items: center; }
+.srow .dom svg { width: 17px; height: 17px; }
+.srow .phrases { display: flex; flex-wrap: wrap; gap: 5px; }
+.srow .tgt { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.srow .smode { font-size: 11.5px; color: var(--ink-3); text-align: right; text-transform: capitalize; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; background: var(--accent-soft); color: var(--ink); border-radius: 999px; padding: 4px 6px 4px 11px; font-size: 12.5px; }
+.chip.ro { padding: 4px 11px; }
+.chip-x { border: none; background: none; color: var(--ink-3); cursor: pointer; display: grid; place-items: center; padding: 0; line-height: 0; }
+.chip-x:hover { color: var(--danger); }
+.chip-x svg { width: 13px; height: 13px; }
+.chipwrap { border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--ground); padding: 9px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chipwrap input { border: none; background: none; outline: none; color: var(--ink); font: inherit; flex: 1; min-width: 120px; padding: 4px; }
+.radiolist { max-height: 240px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--ground); }
+
 .loading { padding: 60px 20px; text-align: center; color: var(--ink-3); }
 
 @media (max-width: 1040px) {
@@ -375,13 +393,16 @@ class HestiaPanel extends HTMLElement {
     this._candSearch = "";
     this._loading = true;
     this._error = null;
-    this._view = "exposure";    // exposure | helpers | settings
+    this._view = "exposure";    // exposure | helpers | settings | sentences
     this._helpers = null;       // Helfer-Liste (min_max/group)
     this._settings = null;      // Allgemein-Settings (llama_url/loop_depth/unsafe_mode)
     this._sDraft = null;        // Settings-Entwurf im Editor
     this._areas = [];           // HA-Areas (Anlege-Dialog)
     this._hcDraft = null;       // Helfer-Anlege-Entwurf
     this._hcSearch = "";
+    this._sentences = null;     // Custom-Sätze-Liste
+    this._scDraft = null;       // Satz-Anlege-Entwurf { phrases[], target_entity, mode, response }
+    this._scSearch = "";        // Ziel-Entität-Picker-Suche
   }
 
   set hass(hass) {
@@ -428,7 +449,7 @@ class HestiaPanel extends HTMLElement {
             <a class="nav-link${this._view === "helpers" ? " active" : ""}" data-view="helpers">${svg('<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>', 17)}<span class="lbl">Helfer</span><span class="tag" id="navhcount"></span></a>
             <div class="group-label">Verhalten</div>
             <a class="soon">${svg('<path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M16 9a4 4 0 0 1 0 6"/>', 17)}<span class="lbl">Medien</span><span class="tag">im Detail</span></a>
-            <a class="soon">${svg('<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>', 17)}<span class="lbl">Custom-Sätze</span><span class="tag">bald</span></a>
+            <a class="nav-link${this._view === "sentences" ? " active" : ""}" data-view="sentences">${svg('<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>', 17)}<span class="lbl">Custom-Sätze</span><span class="tag" id="navscount"></span></a>
             <a class="nav-link${this._view === "settings" ? " active" : ""}" data-view="settings">${svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8M4.6 9a1.6 1.6 0 0 0-.3-1.8"/>', 17)}<span class="lbl">Allgemein &amp; Safemode</span></a>
           </nav>
           <div class="side-foot">
@@ -444,6 +465,8 @@ class HestiaPanel extends HTMLElement {
       <div class="modal" id="addModal"></div>
       <div class="scrim" id="scrimHelper"></div>
       <div class="modal" id="helperModal"></div>
+      <div class="scrim" id="scrimSentence"></div>
+      <div class="modal" id="sentenceModal"></div>
     `;
     this._main = this._root.querySelector("#main");
     this._root.querySelector("#railBtn").addEventListener("click", () => {
@@ -455,8 +478,9 @@ class HestiaPanel extends HTMLElement {
     this._root.querySelector("#scrimDetail").addEventListener("click", () => this._closeSheet());
     this._root.querySelector("#scrimAdd").addEventListener("click", () => this._closeAdd());
     this._root.querySelector("#scrimHelper").addEventListener("click", () => this._closeHelperCreate());
+    this._root.querySelector("#scrimSentence").addEventListener("click", () => this._closeSentenceCreate());
     this.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { this._closeSheet(); this._closeAdd(); this._closeHelperCreate(); }
+      if (e.key === "Escape") { this._closeSheet(); this._closeAdd(); this._closeHelperCreate(); this._closeSentenceCreate(); }
     });
     this._renderView();
   }
@@ -470,6 +494,7 @@ class HestiaPanel extends HTMLElement {
     this._renderView();
     if (v === "helpers") { if (!this._helpers) this._loadHelpers(); else this._renderHelpers(); }
     else if (v === "settings") { if (!this._settings) this._loadSettings(); else this._renderSettings(); }
+    else if (v === "sentences") { if (!this._sentences) this._loadSentences(); else this._renderSentences(); }
     else { if (!this._rows) this._loadRows(); else this._renderExposure(); }
   }
 
@@ -484,6 +509,20 @@ class HestiaPanel extends HTMLElement {
           </div>
         </header>
         <div class="content single" id="content"></div>`;
+    } else if (this._view === "sentences") {
+      this._main.innerHTML = `
+        <header class="topbar">
+          <div class="titlewrap">
+            <div class="eyebrow">Verhalten</div>
+            <h1>Custom-Sätze</h1>
+            <p>Feste Sätze, die <b>direkt</b> eine Aktion auslösen — <b>ohne</b> das Modell. Mehrere Formulierungen pro Aktion, jede feuert eine Ziel-Entität (Szene · Skript · Schalter · Licht …) ein/aus/um. Greift <b>vor</b> Hestia; nur bei fast wortgleichem Treffer, damit normale Anfragen frei bleiben.</p>
+          </div>
+          <div class="actions">
+            <button class="btn primary" id="createSentenceBtn">${svg('<path d="M12 5v14M5 12h14"/>', 24)}<span>Satz anlegen</span></button>
+          </div>
+        </header>
+        <div class="content single" id="content"></div>`;
+      this._main.querySelector("#createSentenceBtn").addEventListener("click", () => this._openSentenceCreate());
     } else if (this._view === "helpers") {
       this._main.innerHTML = `
         <header class="topbar">
@@ -520,6 +559,7 @@ class HestiaPanel extends HTMLElement {
   _renderMain() {
     if (this._view === "helpers") this._renderHelpers();
     else if (this._view === "settings") this._renderSettings();
+    else if (this._view === "sentences") this._renderSentences();
     else this._renderExposure();
   }
 
@@ -1220,6 +1260,192 @@ class HestiaPanel extends HTMLElement {
       this._renderHelpers();
     } catch (e) {
       if (btn) { btn.disabled = false; btn.textContent = "Anlegen & hinzufügen"; }
+      alert("Anlegen fehlgeschlagen: " + ((e && e.message) || e));
+    }
+  }
+
+  // ══════════════════ Custom-Sätze ══════════════════
+  async _loadSentences() {
+    this._error = null; this._sentences = null; this._renderSentences();
+    try {
+      const res = await this._hass.callWS({ type: "hestia/sentence/list" });
+      this._sentences = res.sentences || [];
+    } catch (e) {
+      this._error = (e && e.message) || String(e);
+      this._sentences = [];
+    }
+    this._renderSentences();
+  }
+
+  _renderSentences() {
+    if (!this._content || this._view !== "sentences") return;
+    const navs = this._root.querySelector("#navscount");
+    if (!this._sentences) { this._content.innerHTML = `<div class="col"><div class="loading">Lade Sätze …</div></div>`; return; }
+    const list = this._sentences;
+    if (navs) navs.textContent = list.length ? String(list.length) : "";
+    const errHtml = this._error
+      ? `<div class="banner" style="border-color:var(--danger);color:var(--danger)">${svg('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>')}<div><b>Fehler:</b> ${esc(this._error)}</div></div>`
+      : "";
+    const modeLbl = { on: "Einschalten", off: "Ausschalten", toggle: "Umschalten" };
+    const chatIcon = '<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>';
+    const srow = (s) => {
+      const chips = (s.phrases || []).map((p) => `<span class="chip ro">${esc(p)}</span>`).join("");
+      const resp = s.response ? `<div style="font-family:var(--mono);font-size:11px;color:var(--ink-3);margin-top:7px">↳ „${esc(s.response)}"</div>` : "";
+      return `<div class="srow">
+        <span class="dom">${svg(chatIcon)}</span>
+        <div class="phrases"><div class="chips">${chips}</div>${resp}</div>
+        <div class="tgt">${esc(s.target_entity)}</div>
+        <div class="smode">${modeLbl[s.mode] || esc(s.mode)}</div>
+        <button class="remove-link sdel" data-del="${esc(s.id)}">Löschen</button>
+      </div>`;
+    };
+    const body = !list.length
+      ? `<div class="empty-state">${svg(chatIcon, 34)}<b>Noch keine Custom-Sätze.</b>Lege feste Formulierungen an, die direkt eine Szene, ein Skript oder einen Schalter auslösen — am Modell vorbei.</div>`
+      : `<section class="area"><div class="rows">${list.map(srow).join("")}</div></section>`;
+    this._content.innerHTML = `<div class="col">
+      <div class="banner">${svg('<circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/>')}
+        <div><b>Vor dem Modell:</b> matcht eine Eingabe (fast wortgleich) einen dieser Sätze, feuert Hestia die Aktion <b>direkt</b> und antwortet kurz — kein LLM, keine Verzögerung. Bei mehreren Treffern gewinnt der beste. Nur bei sehr ähnlichem Wortlaut, damit normale Anfragen frei bleiben.</div></div>
+      ${errHtml}${body}</div>`;
+    this._content.querySelectorAll(".sdel").forEach((b) =>
+      b.addEventListener("click", () => this._deleteSentence(b.dataset.del)));
+  }
+
+  async _deleteSentence(id) {
+    const s = (this._sentences || []).find((x) => x.id === id);
+    const first = s && s.phrases && s.phrases[0] ? s.phrases[0] : "";
+    if (!confirm(`Satz „${first}" löschen?`)) return;
+    try {
+      await this._hass.callWS({ type: "hestia/sentence/delete", sentence_id: id });
+      this._sentences = (this._sentences || []).filter((x) => x.id !== id);
+      this._renderSentences();
+    } catch (e) {
+      alert("Löschen fehlgeschlagen: " + ((e && e.message) || e));
+    }
+  }
+
+  // ── Satz anlegen (Modal) ──
+  _openSentenceCreate() {
+    this._scDraft = { phrases: [], target_entity: "", mode: "on", response: "" };
+    this._scSearch = "";
+    this._root.querySelector("#scrimSentence").classList.add("on");
+    this._root.querySelector("#sentenceModal").classList.add("on");
+    this._renderSentenceModal();
+  }
+
+  _closeSentenceCreate() {
+    this._root.querySelector("#scrimSentence").classList.remove("on");
+    this._root.querySelector("#sentenceModal").classList.remove("on");
+    this._scDraft = null;
+  }
+
+  // Ziel-Kandidaten: aktionsfähige Domains aus hass.states (Szene/Skript/Schalter/Licht/…).
+  _scTargets() {
+    const DOMS = ["scene", "script", "switch", "light", "fan", "input_boolean", "media_player",
+      "cover", "climate", "automation", "button", "input_button", "vacuum", "humidifier", "siren",
+      "lock", "alarm_control_panel"];
+    const q = this._scSearch.trim().toLowerCase();
+    const out = [];
+    for (const eid in (this._hass.states || {})) {
+      const dom = eid.split(".")[0];
+      if (!DOMS.includes(dom)) continue;
+      const s = this._hass.states[eid];
+      const nm = (s.attributes && s.attributes.friendly_name) || eid;
+      if (q && !nm.toLowerCase().includes(q) && !eid.toLowerCase().includes(q)) continue;
+      out.push({ eid, nm });
+    }
+    out.sort((a, b) => a.nm.localeCompare(b.nm));
+    return out;
+  }
+
+  _renderSentenceModal() {
+    const modal = this._root.querySelector("#sentenceModal");
+    const d = this._scDraft;
+    const xIcon = '<path d="M18 6 6 18M6 6l12 12"/>';
+    const seg = (key, cur, opts) => `<div class="seg">${opts.map(([k, l]) =>
+      `<button class="seg-b${cur === k ? " on" : ""}" data-${key}="${k}">${l}</button>`).join("")}</div>`;
+    const chips = d.phrases.map((p, i) =>
+      `<span class="chip">${esc(p)}<button class="chip-x" data-rmphrase="${i}">${svg(xIcon, 13)}</button></span>`).join("");
+    const tg = this._scTargets();
+    const targetList = tg.length ? tg.map((c) => {
+      const on = d.target_entity === c.eid;
+      return `<label class="chk${on ? " on" : ""}"><input type="radio" name="sctarget" data-tgt="${esc(c.eid)}"${on ? " checked" : ""}>
+        <span class="chk-nm">${esc(c.nm)}</span><span class="chk-eid">${esc(c.eid)}</span></label>`;
+    }).join("") : `<div class="empty-state" style="padding:24px">Keine passende Ziel-Entität gefunden.</div>`;
+    const canSave = d.phrases.length && d.target_entity;
+    modal.innerHTML = `
+      <div class="modal-head"><h2>Satz anlegen</h2>
+        <button class="btn" id="scClose">${svg(xIcon, 15)}Schließen</button></div>
+      <div class="hc-body">
+        <div class="field"><label>Sätze <span class="hint">— Enter fügt hinzu; mehrere Formulierungen für dieselbe Aktion</span></label>
+          <div class="chipwrap" id="scChips">${chips}<input id="scPhrase" placeholder="${d.phrases.length ? "" : "z. B. Kinoabend"}" autocomplete="off"></div>
+        </div>
+        <div class="field"><label>Ziel-Entität <span class="hint">— was gefeuert wird (Szene · Skript · Schalter · Licht …)</span></label>
+          <div class="search hc-search">${svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>', 16)}
+            <input placeholder="Suchen…" id="scSearch" value="${esc(this._scSearch)}"></div>
+          <div class="radiolist">${targetList}</div>
+        </div>
+        <div class="field"><label>Aktion</label>
+          ${seg("mode", d.mode, [["on", "Einschalten"], ["off", "Ausschalten"], ["toggle", "Umschalten"]])}
+          <div class="hint">Szenen/Skripte werden immer ausgelöst (turn_on) — Modus ist dort ohne Wirkung.</div>
+        </div>
+        <div class="field"><label>Antwort <span class="hint">— optional; leer → „Ok."</span></label>
+          <input class="inp" id="scResp" value="${esc(d.response)}" placeholder="Ok."></div>
+      </div>
+      <div class="hc-foot">
+        <button class="btn primary" id="scCreate"${canSave ? "" : " disabled"}>Anlegen</button>
+      </div>`;
+
+    const refreshSave = () => { const c = modal.querySelector("#scCreate"); if (c) c.disabled = !(d.phrases.length && d.target_entity); };
+    modal.querySelector("#scClose").addEventListener("click", () => this._closeSentenceCreate());
+    const phraseInput = modal.querySelector("#scPhrase");
+    const addPhrase = () => {
+      const v = phraseInput.value.trim();
+      if (v && !d.phrases.includes(v)) d.phrases.push(v);
+      this._renderSentenceModal();
+      const n = this._root.querySelector("#scPhrase"); if (n) n.focus();
+    };
+    phraseInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); addPhrase(); }
+      else if (e.key === "Backspace" && !phraseInput.value && d.phrases.length) {
+        d.phrases.pop(); this._renderSentenceModal(); const n = this._root.querySelector("#scPhrase"); if (n) n.focus();
+      }
+    });
+    modal.querySelectorAll("[data-rmphrase]").forEach((b) => b.addEventListener("click", () => {
+      d.phrases.splice(Number(b.dataset.rmphrase), 1); this._renderSentenceModal();
+      const n = this._root.querySelector("#scPhrase"); if (n) n.focus();
+    }));
+    const se = modal.querySelector("#scSearch");
+    se.addEventListener("input", (e) => {
+      this._scSearch = e.target.value; const p = e.target.selectionStart; this._renderSentenceModal();
+      const n2 = this._root.querySelector("#scSearch"); if (n2) { n2.focus(); n2.setSelectionRange(p, p); }
+    });
+    modal.querySelectorAll("[data-tgt]").forEach((r) => r.addEventListener("change", () => {
+      d.target_entity = r.dataset.tgt; refreshSave();
+    }));
+    modal.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => { d.mode = b.dataset.mode; this._renderSentenceModal(); }));
+    const resp = modal.querySelector("#scResp");
+    resp.addEventListener("input", (e) => { d.response = e.target.value; });
+    modal.querySelector("#scCreate").addEventListener("click", () => this._createSentence());
+  }
+
+  async _createSentence() {
+    const d = this._scDraft;
+    if (!(d.phrases.length && d.target_entity)) return;
+    const btn = this._root.querySelector("#scCreate");
+    if (btn) { btn.disabled = true; btn.textContent = "Lege an …"; }
+    try {
+      const rec = await this._hass.callWS({
+        type: "hestia/sentence/create",
+        phrases: d.phrases,
+        target_entity: d.target_entity,
+        mode: d.mode,
+        response: (d.response || "").trim(),
+      });
+      (this._sentences = this._sentences || []).push(rec);
+      this._closeSentenceCreate();
+      this._renderSentences();
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = "Anlegen"; }
       alert("Anlegen fehlgeschlagen: " + ((e && e.message) || e));
     }
   }

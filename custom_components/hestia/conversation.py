@@ -31,6 +31,7 @@ from .hestia_cap import (TOOL_CALL_START, STOP, all_tool_defs, parse, render_pro
 from .hestia_cap import result as R
 from .house_builder import build_exposure, build_house
 from .executor import execute_calls
+from .sentences import async_fire as sentence_fire, get_sentence_store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,6 +114,16 @@ class HestiaAgent(conversation.ConversationEntity):
         self, user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
+        # 0. Custom-Sätze: roher Fuzzy-Router VOR dem LLM (Bahn-1). Matcht ein Satz (near-exact),
+        #    feuern wir die Ziel-Aktion direkt und antworten kurz — LLM/Loop bleiben außen vor.
+        hit = get_sentence_store(self.hass).match(user_input.text)
+        if hit is not None:
+            rec, score = hit
+            _LOGGER.debug("Hestia custom-sentence hit id=%s score=%.3f target=%s mode=%s",
+                          rec.get("id"), score, rec.get("target_entity"), rec.get("mode"))
+            answer = await sentence_fire(self.hass, rec, user_input.context, self._deny)
+            return self._result(user_input, chat_log, answer)
+
         # 1. Haus + Exposure aus der HA-Registry; System-Prompt (train==serve-Naht)
         exposure = build_exposure(self.hass)   # Quelle = Config-Store (Panel-kuratiert)
         house = build_house(self.hass, exposure)

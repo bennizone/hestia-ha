@@ -15,6 +15,7 @@ from homeassistant.const import Platform
 
 from .const import DOMAIN
 from .panel import async_register_panel, async_remove_panel
+from .sentences import SentenceStore
 from .store import ExposureStore
 from .websocket import async_register as async_register_ws
 
@@ -30,6 +31,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         store = ExposureStore(hass)
         await store.async_load()
         bucket["_store"] = store
+
+    # Custom-Sätze-Store (single instance) — roher Router vor dem LLM (sentences.py).
+    if "_sentences" not in bucket:
+        sent = SentenceStore(hass)
+        await sent.async_load()
+        bucket["_sentences"] = sent
 
     async_register_ws(hass)
     await async_register_panel(hass)
@@ -47,4 +54,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not any(k for k in bucket if not k.startswith("_")):
             async_remove_panel(hass)
             bucket.pop("_store", None)
+            bucket.pop("_sentences", None)
     return ok

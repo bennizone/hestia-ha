@@ -21,6 +21,7 @@ from . import helpers
 from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_UNSAFE_MODE,
                     DEFAULT_LOOP_DEPTH, DEFAULT_UNSAFE_MODE)
 from .house_builder import _aliases, _entity_area_id, _friendly_name
+from .sentences import MODES, get_sentence_store
 from .store import PATCHABLE, get_store
 
 # Live-States, die „nicht erreichbar" bedeuten (→ ⚠ im Panel, nur wenn aktiv).
@@ -265,6 +266,53 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg) -> None:
     connection.send_result(msg["id"], _settings_view(new))
 
 
+# ── Custom-Sätze (roher Router vor dem LLM — sentences.py) ──
+@websocket_api.websocket_command({vol.Required("type"): "hestia/sentence/list"})
+@websocket_api.require_admin
+@callback
+def ws_sentence_list(hass: HomeAssistant, connection, msg) -> None:
+    """Alle konfigurierten Custom-Sätze (Anlege-Reihenfolge)."""
+    connection.send_result(msg["id"], {"sentences": get_sentence_store(hass).all()})
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hestia/sentence/create",
+    vol.Required("phrases"): [str],
+    vol.Required("target_entity"): str,
+    vol.Optional("mode", default="on"): vol.In(MODES),
+    vol.Optional("response", default=""): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_sentence_create(hass: HomeAssistant, connection, msg) -> None:
+    """Neuen Satz anlegen. Validiert: ≥1 Phrase, Ziel-Entität existiert."""
+    phrases = [p.strip() for p in msg["phrases"] if isinstance(p, str) and p.strip()]
+    if not phrases:
+        connection.send_error(msg["id"], "no_phrases", "Mindestens einen Satz angeben.")
+        return
+    target = msg["target_entity"].strip()
+    if not target or hass.states.get(target) is None:
+        connection.send_error(msg["id"], "bad_target", f"Unbekannte Ziel-Entität: {target}")
+        return
+    rec = await get_sentence_store(hass).async_add(phrases, target, msg["mode"], msg.get("response", ""))
+    connection.send_result(msg["id"], rec)
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hestia/sentence/delete",
+    vol.Required("sentence_id"): str,   # NICHT `id` — das ist HAs reserviertes WS-Envelope-Feld
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_sentence_delete(hass: HomeAssistant, connection, msg) -> None:
+    """Satz löschen (per sentence_id)."""
+    sid = msg["sentence_id"]
+    if not await get_sentence_store(hass).async_delete(sid):
+        connection.send_error(msg["id"], "not_found", "Satz nicht gefunden.")
+        return
+    connection.send_result(msg["id"], {"removed": sid})
+
+
 @callback
 def async_register(hass: HomeAssistant) -> None:
     """Alle Hestia-WS-Befehle registrieren (idempotent — HA dedupliziert nach type)."""
@@ -276,3 +324,6 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_helper_delete)
     websocket_api.async_register_command(hass, ws_settings_get)
     websocket_api.async_register_command(hass, ws_settings_set)
+    websocket_api.async_register_command(hass, ws_sentence_list)
+    websocket_api.async_register_command(hass, ws_sentence_create)
+    websocket_api.async_register_command(hass, ws_sentence_delete)
