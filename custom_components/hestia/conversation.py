@@ -24,7 +24,8 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_EXPOSURE, CONF_DENY,
-                    DEFAULT_LOOP_DEPTH, DEFAULT_DENY, LOOP_EXHAUSTED_TEXTS)
+                    CONF_UNSAFE_MODE, DEFAULT_LOOP_DEPTH, DEFAULT_DENY, DEFAULT_UNSAFE_MODE,
+                    LOOP_EXHAUSTED_TEXTS, effective_deny)
 from .hestia_cap import (TOOL_CALL_START, STOP, all_tool_defs, parse, render_prompt,
                          render_system_content)
 from .hestia_cap import result as R
@@ -88,7 +89,8 @@ class HestiaAgent(conversation.ConversationEntity):
         self._attr_unique_id = entry.entry_id
         self._url = entry.data[CONF_LLAMA_URL]
         self._depth = entry.data.get(CONF_LOOP_DEPTH, DEFAULT_LOOP_DEPTH)
-        self._deny = entry.data.get(CONF_DENY, DEFAULT_DENY)
+        self._deny = effective_deny(entry.data.get(CONF_DENY, DEFAULT_DENY),
+                                    entry.data.get(CONF_UNSAFE_MODE, DEFAULT_UNSAFE_MODE))
 
     @property
     def supported_languages(self) -> list[str] | str:

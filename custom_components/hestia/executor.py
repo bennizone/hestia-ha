@@ -156,6 +156,14 @@ async def _set_state(hass, eids, names, args, context) -> dict:
         await hass.services.async_call("light", "turn_on",
                                        {"entity_id": eids, "color_temp_kelvin": int(canon)},
                                        blocking=True, context=context)
+    elif attr == "lock":            # Safety — nur erreichbar wenn unsafe_mode lock aus deny nahm
+        await hass.services.async_call("lock", "lock" if canon == "locked" else "unlock",
+                                       {"entity_id": eids}, blocking=True, context=context)
+    elif attr == "alarm":          # Safety — dito (deny-gesteuert per Config-Toggle)
+        svc = {"armed_home": "alarm_arm_home", "armed_away": "alarm_arm_away",
+               "armed_night": "alarm_arm_night", "disarmed": "alarm_disarm"}[canon]
+        await hass.services.async_call("alarm_control_panel", svc,
+                                       {"entity_id": eids}, blocking=True, context=context)
     else:
         return R.err_not_controllable(attr)
     return R.shape_set_state(names, canon, unit)

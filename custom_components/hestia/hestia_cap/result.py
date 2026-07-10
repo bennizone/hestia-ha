@@ -27,7 +27,7 @@ from .schema import COLOR_WORDS, SETTABLE_ATTRS
 # „stell die Heizung auf 20" darf NUR climate treffen, nicht TVs/Lichter/Lüfter.
 ATTR_DOMAIN = {"temperature": "climate", "brightness": "light", "color": "light",
                "color_temp": "light", "volume": "media_player", "position": "cover",
-               "fan_speed": "fan"}
+               "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel"}
 
 # amount-Enum → Schrittweite (pct-Verben) bzw. Grad-Delta (temperature)
 STEP_PCT = {"a_little": 10, "some": 25, "a_lot": 50}
