@@ -18,7 +18,8 @@ from homeassistant.helpers import (area_registry as ar, device_registry as dr,
                                    entity_registry as er, floor_registry as fr)
 
 from . import helpers
-from .const import DOMAIN
+from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_UNSAFE_MODE,
+                    DEFAULT_LOOP_DEPTH, DEFAULT_UNSAFE_MODE)
 from .house_builder import _aliases, _entity_area_id, _friendly_name
 from .store import PATCHABLE, get_store
 
@@ -206,6 +207,64 @@ async def ws_helper_delete(hass: HomeAssistant, connection, msg) -> None:
     connection.send_result(msg["id"], {"removed": msg["entry_id"]})
 
 
+# ── Allgemein & Safemode (Config-Entry-Settings — kein Store, HAs eigenes .storage) ──
+def _hestia_entry(hass: HomeAssistant):
+    """Der (eine) Hestia-Config-Entry. Single-Instance-Integration → erster Eintrag."""
+    entries = hass.config_entries.async_entries(DOMAIN)
+    return entries[0] if entries else None
+
+
+def _settings_view(data) -> dict:
+    """Config-Entry-`data` → schlanke Settings-Sicht fürs Panel."""
+    return {
+        "llama_url": data.get(CONF_LLAMA_URL, ""),
+        "loop_depth": data.get(CONF_LOOP_DEPTH, DEFAULT_LOOP_DEPTH),
+        "unsafe_mode": data.get(CONF_UNSAFE_MODE, DEFAULT_UNSAFE_MODE),
+    }
+
+
+@websocket_api.websocket_command({vol.Required("type"): "hestia/settings/get"})
+@websocket_api.require_admin
+@callback
+def ws_settings_get(hass: HomeAssistant, connection, msg) -> None:
+    """Allgemein-Settings lesen (llama.cpp-Endpunkt, Loop-Tiefe, Safemode)."""
+    entry = _hestia_entry(hass)
+    if entry is None:
+        connection.send_error(msg["id"], "no_entry", "Keine Hestia-Konfiguration gefunden.")
+        return
+    connection.send_result(msg["id"], _settings_view(entry.data))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hestia/settings/set",
+    vol.Optional("llama_url"): str,
+    vol.Optional("loop_depth"): vol.All(int, vol.Range(min=1, max=8)),
+    vol.Optional("unsafe_mode"): bool,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_settings_set(hass: HomeAssistant, connection, msg) -> None:
+    """Allgemein-Settings ins Config-Entry schreiben. `async_update_entry` ersetzt `entry.data`
+    in-place → die Conversation-Entity liest sie live (conversation.py Properties), kein Reload."""
+    entry = _hestia_entry(hass)
+    if entry is None:
+        connection.send_error(msg["id"], "no_entry", "Keine Hestia-Konfiguration gefunden.")
+        return
+    new = dict(entry.data)
+    if "llama_url" in msg:
+        url = msg["llama_url"].strip()
+        if not url:
+            connection.send_error(msg["id"], "bad_url", "Endpunkt darf nicht leer sein.")
+            return
+        new[CONF_LLAMA_URL] = url
+    if "loop_depth" in msg:
+        new[CONF_LOOP_DEPTH] = msg["loop_depth"]
+    if "unsafe_mode" in msg:
+        new[CONF_UNSAFE_MODE] = msg["unsafe_mode"]
+    hass.config_entries.async_update_entry(entry, data=new)
+    connection.send_result(msg["id"], _settings_view(new))
+
+
 @callback
 def async_register(hass: HomeAssistant) -> None:
     """Alle Hestia-WS-Befehle registrieren (idempotent — HA dedupliziert nach type)."""
@@ -215,3 +274,5 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_helper_list)
     websocket_api.async_register_command(hass, ws_helper_create)
     websocket_api.async_register_command(hass, ws_helper_delete)
+    websocket_api.async_register_command(hass, ws_settings_get)
+    websocket_api.async_register_command(hass, ws_settings_set)

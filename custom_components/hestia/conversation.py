@@ -87,10 +87,22 @@ class HestiaAgent(conversation.ConversationEntity):
         self.hass = hass
         self.entry = entry
         self._attr_unique_id = entry.entry_id
-        self._url = entry.data[CONF_LLAMA_URL]
-        self._depth = entry.data.get(CONF_LOOP_DEPTH, DEFAULT_LOOP_DEPTH)
-        self._deny = effective_deny(entry.data.get(CONF_DENY, DEFAULT_DENY),
-                                    entry.data.get(CONF_UNSAFE_MODE, DEFAULT_UNSAFE_MODE))
+
+    # Config LIVE aus dem Config-Entry lesen (nicht im __init__ cachen): das Panel schreibt
+    # Allgemein-Settings via `async_update_entry`, was `entry.data` in-place ersetzt — dieselbe
+    # Entry-Referenz. So greifen URL/Loop-Tiefe/Safemode sofort, ohne Reload/Entity-Neubau.
+    @property
+    def _url(self) -> str:
+        return self.entry.data[CONF_LLAMA_URL]
+
+    @property
+    def _depth(self) -> int:
+        return self.entry.data.get(CONF_LOOP_DEPTH, DEFAULT_LOOP_DEPTH)
+
+    @property
+    def _deny(self) -> list:
+        return effective_deny(self.entry.data.get(CONF_DENY, DEFAULT_DENY),
+                              self.entry.data.get(CONF_UNSAFE_MODE, DEFAULT_UNSAFE_MODE))
 
     @property
     def supported_languages(self) -> list[str] | str:

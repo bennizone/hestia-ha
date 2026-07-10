@@ -375,8 +375,10 @@ class HestiaPanel extends HTMLElement {
     this._candSearch = "";
     this._loading = true;
     this._error = null;
-    this._view = "exposure";    // exposure | helpers
+    this._view = "exposure";    // exposure | helpers | settings
     this._helpers = null;       // Helfer-Liste (min_max/group)
+    this._settings = null;      // Allgemein-Settings (llama_url/loop_depth/unsafe_mode)
+    this._sDraft = null;        // Settings-Entwurf im Editor
     this._areas = [];           // HA-Areas (Anlege-Dialog)
     this._hcDraft = null;       // Helfer-Anlege-Entwurf
     this._hcSearch = "";
@@ -425,9 +427,9 @@ class HestiaPanel extends HTMLElement {
             <a class="soon">${svg('<path d="M4 7h11"/><path d="M19 7h1"/><circle cx="17" cy="7" r="2"/><path d="M4 17h1"/><path d="M9 17h11"/><circle cx="7" cy="17" r="2"/>', 17)}<span class="lbl">Limits &amp; Mapping</span><span class="tag">im Detail</span></a>
             <a class="nav-link${this._view === "helpers" ? " active" : ""}" data-view="helpers">${svg('<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/>', 17)}<span class="lbl">Helfer</span><span class="tag" id="navhcount"></span></a>
             <div class="group-label">Verhalten</div>
-            <a class="soon">${svg('<path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M16 9a4 4 0 0 1 0 6"/>', 17)}<span class="lbl">Medien</span><span class="tag">bald</span></a>
+            <a class="soon">${svg('<path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M16 9a4 4 0 0 1 0 6"/>', 17)}<span class="lbl">Medien</span><span class="tag">im Detail</span></a>
             <a class="soon">${svg('<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>', 17)}<span class="lbl">Custom-Sätze</span><span class="tag">bald</span></a>
-            <a class="soon">${svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8M4.6 9a1.6 1.6 0 0 0-.3-1.8"/>', 17)}<span class="lbl">Allgemein &amp; Safemode</span><span class="tag">bald</span></a>
+            <a class="nav-link${this._view === "settings" ? " active" : ""}" data-view="settings">${svg('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8M4.6 9a1.6 1.6 0 0 0-.3-1.8"/>', 17)}<span class="lbl">Allgemein &amp; Safemode</span></a>
           </nav>
           <div class="side-foot">
             <span class="dot"></span>
@@ -467,11 +469,22 @@ class HestiaPanel extends HTMLElement {
       a.classList.toggle("active", a.dataset.view === v));
     this._renderView();
     if (v === "helpers") { if (!this._helpers) this._loadHelpers(); else this._renderHelpers(); }
+    else if (v === "settings") { if (!this._settings) this._loadSettings(); else this._renderSettings(); }
     else { if (!this._rows) this._loadRows(); else this._renderExposure(); }
   }
 
   _renderView() {
-    if (this._view === "helpers") {
+    if (this._view === "settings") {
+      this._main.innerHTML = `
+        <header class="topbar">
+          <div class="titlewrap">
+            <div class="eyebrow">Verhalten</div>
+            <h1>Allgemein &amp; Safemode</h1>
+            <p>Wohin Hestia spricht (llama.cpp-Endpunkt), wie oft der Loop nachfassen darf — und das <b>Sicherheits-Gate</b> für Schlösser &amp; Alarm. Änderungen greifen sofort, ohne Neustart.</p>
+          </div>
+        </header>
+        <div class="content single" id="content"></div>`;
+    } else if (this._view === "helpers") {
       this._main.innerHTML = `
         <header class="topbar">
           <div class="titlewrap">
@@ -506,6 +519,7 @@ class HestiaPanel extends HTMLElement {
   // Dispatcher — Exposure-Callsites rufen weiter _renderMain(); View entscheidet.
   _renderMain() {
     if (this._view === "helpers") this._renderHelpers();
+    else if (this._view === "settings") this._renderSettings();
     else this._renderExposure();
   }
 
@@ -919,6 +933,100 @@ class HestiaPanel extends HTMLElement {
   }
 
   // ══════════════════ Helfer-View ══════════════════
+  // ── Allgemein & Safemode (Config-Entry-Settings via hestia/settings/*) ──
+  _unsafeBanner() {
+    const warn = '<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4M12 17h.01"/>';
+    return `<div class="banner" style="border-color:var(--danger);color:var(--danger)">${svg(warn)}<div><b>Safemode aus:</b> Hestia kann Türschlösser und die Alarmanlage schalten. Nur so lassen, wenn du das wirklich willst.</div></div>`;
+  }
+
+  async _loadSettings() {
+    this._error = null; this._settings = null; this._renderSettings();
+    try {
+      this._settings = await this._hass.callWS({ type: "hestia/settings/get" });
+    } catch (e) {
+      this._error = (e && e.message) || String(e);
+      this._settings = { llama_url: "", loop_depth: 3, unsafe_mode: false };
+    }
+    this._sDraft = { ...this._settings };
+    this._renderSettings();
+  }
+
+  _renderSettings() {
+    if (!this._content || this._view !== "settings") return;
+    if (!this._settings || !this._sDraft) {
+      this._content.innerHTML = `<div class="col"><div class="loading">Lade Einstellungen …</div></div>`; return;
+    }
+    const s = this._sDraft;
+    const errHtml = this._error
+      ? `<div class="banner" style="border-color:var(--danger);color:var(--danger)">${svg('<circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/>')}<div><b>Fehler:</b> ${esc(this._error)}</div></div>`
+      : "";
+    this._content.innerHTML = `
+      <div class="col" style="max-width:640px">
+        ${errHtml}
+        <div class="field">
+          <label>llama.cpp-Endpunkt <span class="hint">— /completion-Basis-URL</span></label>
+          <input class="inp" id="sUrl" value="${esc(s.llama_url)}" placeholder="http://10.83.1.111:8099">
+        </div>
+        <div class="field">
+          <label>Loop-Tiefe <span class="hint">— max. Tool-Runden pro Anfrage (1–8)</span></label>
+          <input class="inp" type="number" min="1" max="8" step="1" id="sDepth" value="${Number(s.loop_depth) || 3}" style="max-width:140px">
+        </div>
+        <div class="toggle-row">
+          <div class="tl">Schlösser &amp; Alarm steuern<small>Aus (empfohlen) = Hestia <b>blockt</b> Schloss-/Alarm-Befehle und antwortet „aus Sicherheitsgründen nicht". An = Steuerung erlaubt — bewusst, auf eigenes Risiko.</small></div>
+          <label class="switch"><input type="checkbox" id="sUnsafe"${s.unsafe_mode ? " checked" : ""}><span class="track"></span><span class="knob"></span></label>
+        </div>
+        <div id="unsafeWarn">${s.unsafe_mode ? this._unsafeBanner() : ""}</div>
+        <div class="backup-note">${svg('<path d="M21 8v13H3V8"/><path d="M1 3h22v5H1zM10 12h4"/>')}Wird mit dem normalen HA-Backup gesichert.</div>
+        <div class="save-bar">
+          <button class="btn" id="sReset">Zurücksetzen</button>
+          <button class="btn primary" id="sSave">Speichern</button>
+        </div>
+      </div>`;
+    this._wireSettings();
+  }
+
+  _wireSettings() {
+    const q = (id) => this._content.querySelector("#" + id);
+    const url = q("sUrl");
+    if (url) url.addEventListener("input", (e) => { this._sDraft.llama_url = e.target.value; });
+    const depth = q("sDepth");
+    if (depth) depth.addEventListener("input", (e) => {
+      this._sDraft.loop_depth = Math.max(1, Math.min(8, Math.round(Number(e.target.value) || 3)));
+    });
+    const uns = q("sUnsafe");
+    if (uns) uns.addEventListener("change", (e) => {
+      this._sDraft.unsafe_mode = e.target.checked;
+      const w = q("unsafeWarn");
+      if (w) w.innerHTML = e.target.checked ? this._unsafeBanner() : "";
+    });
+    const save = q("sSave");
+    if (save) save.addEventListener("click", () => this._saveSettings());
+    const reset = q("sReset");
+    if (reset) reset.addEventListener("click", () => { this._sDraft = { ...this._settings }; this._renderSettings(); });
+  }
+
+  async _saveSettings() {
+    const d = this._sDraft;
+    const url = (d.llama_url || "").trim();
+    if (!url) { alert("Endpunkt darf nicht leer sein."); return; }
+    const btn = this._content.querySelector("#sSave");
+    if (btn) { btn.disabled = true; btn.textContent = "Speichern …"; }
+    try {
+      const updated = await this._hass.callWS({
+        type: "hestia/settings/set",
+        llama_url: url,
+        loop_depth: Math.max(1, Math.min(8, Math.round(Number(d.loop_depth) || 3))),
+        unsafe_mode: !!d.unsafe_mode,
+      });
+      this._settings = updated;
+      this._sDraft = { ...updated };
+      this._renderSettings();
+    } catch (e) {
+      if (btn) { btn.disabled = false; btn.textContent = "Speichern"; }
+      alert("Speichern fehlgeschlagen: " + ((e && e.message) || e));
+    }
+  }
+
   async _loadHelpers() {
     this._loading = true; this._error = null; this._renderHelpers();
     try {
