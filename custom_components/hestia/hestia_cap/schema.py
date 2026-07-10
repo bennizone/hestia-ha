@@ -71,6 +71,32 @@ COLOR_WORDS = ("warm_white", "cold_white", "white", "red", "green", "blue",
                "yellow", "orange", "purple", "pink")
 COLOR_TEMP_WORDS = ("warm", "cool")  # colortemp-Wortwerte (neben Kelvin-Zahl) — Single-Source fürs GBNF-value-Tightening
 
+# Farb-Synonyme (dt + en Varianten) → kanonisches COLOR_WORDS-Enum. Angewandt in
+# result.set_value_or_error VOR der Enum-Prüfung (serve==train). Deutsche Farbnamen
+# konvertieren (Benni 2026-07-10, „ausführliche map"); genuin gamut-fremde Farben
+# (türkis/cyan, braun, grau, gold …) bleiben ABSICHTLICH ungemappt → invalid_value +
+# allowed-Suggestion (H5). Enum-native englische Werte (red/green/…) laufen über den
+# .get-Default durch, brauchen also keinen Identity-Eintrag.
+COLOR_SYNONYMS = {
+    "rot": "red", "hellrot": "red", "dunkelrot": "red", "weinrot": "red",
+    "grün": "green", "gruen": "green", "hellgrün": "green", "hellgruen": "green",
+    "dunkelgrün": "green", "dunkelgruen": "green",
+    "blau": "blue", "hellblau": "blue", "dunkelblau": "blue", "navy": "blue",
+    "marineblau": "blue",
+    "gelb": "yellow",
+    "orangefarben": "orange",
+    "rosa": "pink", "rose": "pink", "rosé": "pink", "magenta": "pink",
+    "fuchsia": "pink", "pinkfarben": "pink",
+    "lila": "purple", "violett": "purple", "violet": "purple", "purpur": "purple",
+    "aubergine": "purple", "indigo": "purple", "flieder": "purple",
+    "weiß": "white", "weiss": "white",
+    "warmweiß": "warm_white", "warmweiss": "warm_white", "warmwhite": "warm_white",
+    "warmes weiß": "warm_white", "warmes weiss": "warm_white",
+    "kaltweiß": "cold_white", "kaltweiss": "cold_white", "coldwhite": "cold_white",
+    "kühlweiß": "cold_white", "kuehlweiss": "cold_white", "kaltes weiß": "cold_white",
+    "kaltes weiss": "cold_white", "tageslichtweiß": "cold_white",
+}
+
 
 def settable_value_words() -> tuple[str, ...]:
     """Alle Wort-Werte, die IRGENDEIN SETTABLE_ATTR annehmen kann (deduped, für GBNF-value-Union).

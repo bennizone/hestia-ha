@@ -20,7 +20,7 @@ from __future__ import annotations
 import difflib
 from typing import Protocol, runtime_checkable
 
-from .schema import COLOR_WORDS, SETTABLE_ATTRS
+from .schema import COLOR_SYNONYMS, COLOR_WORDS, SETTABLE_ATTRS
 
 # ── Konstanten (aus executor.py gehoben — jetzt Single-Source) ────────────────
 # Attribut → zuständige Domain (set_state/adjust ohne explizites domain-Filter):
@@ -226,9 +226,10 @@ def set_value_or_error(attr, val) -> tuple:
     if attr == "value":                      # generischer Zahl-Helfer (number/input_number)
         return _num(float(val)), None, None
     if attr == "color":
-        if val not in COLOR_WORDS:
+        cv = COLOR_SYNONYMS.get(str(val).strip().lower(), str(val).strip().lower())
+        if cv not in COLOR_WORDS:            # dt/en-Synonyme normalisiert, echt gamut-fremd → Fehler
             return None, None, err_invalid_value("color", val, list(COLOR_WORDS))
-        return val, None, None
+        return cv, None, None                # kanonischer Enum-Wert (Service-Arg + Result-value)
     if attr == "color_temp":
         kelvin = KELVIN.get(val, val if isinstance(val, (int, float)) else None)
         if kelvin is None:
