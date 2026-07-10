@@ -191,7 +191,7 @@ async def _adjust(hass, eids, names, args, context) -> dict:
         svc = "volume_up" if direction == "up" else "volume_down"
         await hass.services.async_call("media_player", svc, {"entity_id": eids},
                                        blocking=True, context=context)
-    elif attr in ("temperature", "position"):
+    elif attr in ("temperature", "position", "fan_speed"):
         delta = R.adjust_delta(attr, amount, direction)
         for eid in eids:
             cur = before.get(eid)
@@ -200,6 +200,10 @@ async def _adjust(hass, eids, names, args, context) -> dict:
             if attr == "temperature":
                 await hass.services.async_call("climate", "set_temperature",
                                                {"entity_id": eid, "temperature": float(cur) + delta},
+                                               blocking=True, context=context)
+            elif attr == "fan_speed":       # Reconcile 2026-07-10: Generator trainiert adjust(fan_speed)
+                await hass.services.async_call("fan", "set_percentage",
+                                               {"entity_id": eid, "percentage": max(0, min(100, int(cur + delta)))},
                                                blocking=True, context=context)
             else:
                 await hass.services.async_call("cover", "set_cover_position",
