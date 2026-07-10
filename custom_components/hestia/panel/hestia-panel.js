@@ -662,6 +662,7 @@ class HestiaPanel extends HTMLElement {
           <textarea class="ta" id="dDesc" placeholder="z. B. „Ambientelicht" meint die Stehlampe, nicht diese.">${esc(d.description)}</textarea>
         </div>
         ${this._limitsHtml(r, d)}
+        ${this._mediaHtml(r, d)}
         <div class="compiler">
           <div class="ch">${svg('<path d="m7 8-4 4 4 4M17 8l4 4-4 4M14 4l-4 16"/>')}So kommt es beim Modell an</div>
           <pre>${this._compilerHtml(r, d)}</pre>
@@ -703,6 +704,15 @@ class HestiaPanel extends HTMLElement {
     </div>`;
   }
 
+  // ── Medien-Eligibility (nur media_player) ──
+  _mediaHtml(r, d) {
+    if (r.domain !== "media_player") return "";   // Flag ist nur für media_player relevant
+    return `<div class="toggle-row">
+      <div class="tl">Im Live-Kontext<small>Läuft dieser Player, sieht das Modell „Läuft gerade …". Aus = bewusst ausgeschlossen (z.&nbsp;B. Schlafzimmer-TV) — bleibt aber steuerbar.</small></div>
+      <label class="switch"><input type="checkbox" id="dMediaCtx"${d.media_context ? " checked" : ""}><span class="track"></span><span class="knob"></span></label>
+    </div>`;
+  }
+
   _compilerHtml(r, d) {
     const name = d.llm_name || r.ha_name;
     let out = `<b>${esc(name)}</b> (${esc(r.area || "Ohne Raum")}, ${esc(domLabel(r.domain))})`;
@@ -727,6 +737,8 @@ class HestiaPanel extends HTMLElement {
     if (lmin) lmin.addEventListener("input", (e) => { this._draft.limit_min = clampPct(e.target.value); this._refreshLimitPreview(); });
     const lmax = q("dLimMax");
     if (lmax) lmax.addEventListener("input", (e) => { this._draft.limit_max = clampPct(e.target.value); this._refreshLimitPreview(); });
+    const mctx = q("dMediaCtx");
+    if (mctx) mctx.addEventListener("change", (e) => { this._draft.media_context = e.target.checked; });
     const ai = q("aliasInp");
     if (ai) ai.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && e.target.value.trim()) {
@@ -789,6 +801,7 @@ class HestiaPanel extends HTMLElement {
       active: r.active,
       limit_min: r.limit_min ?? 0,
       limit_max: r.limit_max ?? 100,
+      media_context: r.media_context ?? true,
     };
     this._renderMain();
     if (this._isNarrow() && !keepSheet) this.classList.add("detail-open");
@@ -806,6 +819,7 @@ class HestiaPanel extends HTMLElement {
       patch.limit_min = d.limit_min;
       patch.limit_max = d.limit_max;
     }
+    if (r.domain === "media_player") patch.media_context = d.media_context;   // Live-Kontext-Flag
     try {
       const updated = await this._hass.callWS({
         type: "hestia/exposure/set", entity_id: eid, patch,

@@ -66,6 +66,7 @@ def _enrich(hass: HomeAssistant, entry, record: dict, regs) -> dict:
         "active": record["active"],
         "limit_min": record["limit_min"],           # WRITE-Mapping-Range (pct-Domains); 0/100 = kein Mapping
         "limit_max": record["limit_max"],
+        "media_context": record["media_context"],   # media_player: im „Läuft gerade …"-Live-Kontext?
         "available": bool(st) and raw not in _UNAVAILABLE,
         "state": raw,
     }

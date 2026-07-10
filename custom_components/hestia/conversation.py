@@ -105,7 +105,7 @@ class HestiaAgent(conversation.ConversationEntity):
         exposure = build_exposure(self.hass)   # Quelle = Config-Store (Panel-kuratiert)
         house = build_house(self.hass, exposure)
         system_content = render_system_content(house)   # statischer, cachebarer Präfix (ohne Raum/Zeit)
-        live_context = self._live_context(user_input)    # volatiler Schwanz = 2. System-Message
+        live_context = self._live_context(user_input, exposure)   # volatiler Schwanz = 2. System-Message
 
         tools = all_tool_defs()
         msgs = [{"role": "system", "content": system_content}]
@@ -149,9 +149,14 @@ class HestiaAgent(conversation.ConversationEntity):
         return self._result(user_input, chat_log, answer)
 
     # ── Live-Kontext-Schwanz (volatil, nach den Tools — prefix-cache-schonend) ──
-    def _live_context(self, user_input) -> str:
+    def _live_context(self, user_input, exposure: dict[str, dict]) -> str:
         """Datum/Tag/Zeit · Raum (device→area; mobil→kein fester Raum) · laufende Timer/Medien.
-        PROTOTYP (v23.1): Format provisorisch; train==serve-Lock folgt im Generator."""
+        PROTOTYP (v23.1): Format provisorisch; train==serve-Lock folgt im Generator.
+
+        Medien-Eligibility (Benni-Lock 2026-07-10, „Nur exposte + opt-out"): ein spielender
+        media_player erscheint NUR, wenn er Exposure-Member ist (added AND active — `exposure`
+        enthält genau die) UND sein `media_context`-Flag gesetzt ist (Default True). So leakt kein
+        nicht-kuratierter Player, und einzelne lassen sich bewusst ausschließen (bleiben steuerbar)."""
         from homeassistant.util import dt as dt_util
         now = dt_util.now()
         parts = [f"Aktueller Kontext: {_WEEKDAYS_DE[now.weekday()]}, "
@@ -165,8 +170,12 @@ class HestiaAgent(conversation.ConversationEntity):
                 rem = st.attributes.get("remaining")
                 active.append(f"Timer {nm}" + (f" (noch {rem})" if rem else ""))
         for st in self.hass.states.async_all("media_player"):
-            if st.state == "playing":
-                active.append(f"Medienwiedergabe {st.attributes.get('friendly_name') or ''}".strip())
+            if st.state != "playing":
+                continue
+            rec = exposure.get(st.entity_id)
+            if not rec or not rec.get("media_context", True):   # nicht exposed ODER bewusst ausgeschlossen
+                continue
+            active.append(f"Medienwiedergabe {st.attributes.get('friendly_name') or ''}".strip())
         if active:
             parts.append("Läuft gerade: " + "; ".join(active) + ".")
         return " ".join(parts)

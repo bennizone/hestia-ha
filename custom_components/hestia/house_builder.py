@@ -86,6 +86,9 @@ def build_exposure(hass: HomeAssistant) -> dict[str, dict]:
             # SERVE-only: WRITE-Mapping-Range (mapping.norm → Tuple|None). Der geteilte Result-Layer
             # liest diesen Key NIE → kein Einfluss aufs Tool-JSON (train==serve bleibt intakt).
             "limit": mapping.norm(srec["limit_min"], srec["limit_max"]),
+            # SERVE-only: media_player-Live-Kontext-Eligibility (conversation._live_context liest ihn).
+            # Beeinflusst NUR den volatilen „Läuft gerade …"-Schwanz, nicht House/Prompt/Tool-JSON.
+            "media_context": srec["media_context"],
         }
     return out
 

@@ -35,6 +35,10 @@ _RECORD_DEFAULTS: dict = {
     "description": "",
     "limit_min": 0,
     "limit_max": 100,
+    # Live-Kontext-Eligibility (nur media_player): spielt dieser Player, sieht das Modell
+    # „Läuft gerade …". Default True = einbezogen; bewusstes Opt-out schließt ihn aus (bleibt
+    # aber steuerbar). Greift NUR für Member (added AND active) — s. conversation._live_context.
+    "media_context": True,
 }
 # Nur diese Felder dürfen per WS-`set` gepatcht werden.
 PATCHABLE = frozenset(_RECORD_DEFAULTS.keys())
@@ -95,6 +99,8 @@ class ExposureStore:
                     clean[k] = max(0, min(100, int(clean[k])))
                 except (TypeError, ValueError):
                     del clean[k]
+        if "media_context" in clean:              # Live-Kontext-Flag → sauberer bool
+            clean["media_context"] = bool(clean["media_context"])
         cur = dict(self._data.get(entity_id, {}))
         cur.update(clean)
         self._data[entity_id] = cur
