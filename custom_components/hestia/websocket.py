@@ -21,7 +21,7 @@ from . import helpers
 from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_UNSAFE_MODE,
                     DEFAULT_LOOP_DEPTH, DEFAULT_UNSAFE_MODE)
 from .house_builder import _aliases, _entity_area_id, _friendly_name
-from .sentences import MODES, get_sentence_store
+from .sentences import MODES, SUPPORTED_DOMAINS, get_sentence_store
 from .store import PATCHABLE, get_store
 
 # Live-States, die „nicht erreichbar" bedeuten (→ ⚠ im Panel, nur wenn aktiv).
@@ -293,6 +293,10 @@ async def ws_sentence_create(hass: HomeAssistant, connection, msg) -> None:
     target = msg["target_entity"].strip()
     if not target or hass.states.get(target) is None:
         connection.send_error(msg["id"], "bad_target", f"Unbekannte Ziel-Entität: {target}")
+        return
+    if target.split(".")[0] not in SUPPORTED_DOMAINS:   # sonst würde async_fire still no-oppen
+        connection.send_error(msg["id"], "bad_domain",
+                              f"Diese Geräteart lässt sich (noch) nicht per Satz steuern: {target}")
         return
     rec = await get_sentence_store(hass).async_add(phrases, target, msg["mode"], msg.get("response", ""))
     connection.send_result(msg["id"], rec)

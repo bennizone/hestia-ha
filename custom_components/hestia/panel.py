@@ -22,7 +22,7 @@ PANEL_URL_PATH = "hestia"                       # /hestia in der URL + Sidebar-S
 PANEL_ELEMENT = "hestia-panel"                  # Custom-Element-Tag im Bundle
 _STATIC_PATH = "/hestia_static"                 # Static-Mount für das Bundle
 # Cache-Bust je Bundle-Änderung — HA cached Panel-Module aggressiv. Beim Editieren hochzählen.
-PANEL_JS_VERSION = "7"
+PANEL_JS_VERSION = "8"
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:

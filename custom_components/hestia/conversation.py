@@ -114,15 +114,17 @@ class HestiaAgent(conversation.ConversationEntity):
         self, user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
-        # 0. Custom-Sätze: roher Fuzzy-Router VOR dem LLM (Bahn-1). Matcht ein Satz (near-exact),
+        # 0. Custom-Sätze: roher Router VOR dem LLM (Bahn-1). Matcht ein Satz (exact/1-Edit),
         #    feuern wir die Ziel-Aktion direkt und antworten kurz — LLM/Loop bleiben außen vor.
-        hit = get_sentence_store(self.hass).match(user_input.text)
+        store = get_sentence_store(self.hass)
+        hit = store.match(user_input.text) if store else None
         if hit is not None:
-            rec, score = hit
-            _LOGGER.debug("Hestia custom-sentence hit id=%s score=%.3f target=%s mode=%s",
-                          rec.get("id"), score, rec.get("target_entity"), rec.get("mode"))
+            rec, edits = hit
+            _LOGGER.debug("Hestia custom-sentence hit id=%s edits=%d target=%s mode=%s",
+                          rec.get("id"), edits, rec.get("target_entity"), rec.get("mode"))
             answer = await sentence_fire(self.hass, rec, user_input.context, self._deny)
-            return self._result(user_input, chat_log, answer)
+            # Router-Aktion ist terminal → Mikro zu (auch wenn der Admin-Text auf „?" endet).
+            return self._result(user_input, chat_log, answer, continue_conversation=False)
 
         # 1. Haus + Exposure aus der HA-Registry; System-Prompt (train==serve-Naht)
         exposure = build_exposure(self.hass)   # Quelle = Config-Store (Panel-kuratiert)
@@ -229,11 +231,14 @@ class HestiaAgent(conversation.ConversationEntity):
             return area.name if area else None
         return None
 
-    def _result(self, user_input, chat_log, answer: str) -> conversation.ConversationResult:
+    def _result(self, user_input, chat_log, answer: str,
+                continue_conversation: bool | None = None) -> conversation.ConversationResult:
         response = intent.IntentResponse(language=user_input.language)
         response.async_set_speech(answer)
+        if continue_conversation is None:
+            continue_conversation = answer.rstrip().endswith("?")   # „?" → Mikro offen
         return conversation.ConversationResult(
             response=response,
             conversation_id=chat_log.conversation_id,
-            continue_conversation=answer.rstrip().endswith("?"),   # „?" → Mikro offen
+            continue_conversation=continue_conversation,
         )

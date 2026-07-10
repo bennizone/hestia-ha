@@ -7,16 +7,17 @@ Satz, feuern wir die Aktion und geben einen kurzen Bestätigungstext zurück —
 Design-Locks (Benni 2026-07-10):
   - Antwort-Text OPTIONAL pro Satz (leer → generisch „Ok.").
   - Ziel = feste Entität (global, keine Raum-Auflösung — das ist Bahn 2).
-  - Bei mehreren Treffern gewinnt der BESTE Fuzzy-Score (Gleichstand → erster = Anlege-Reihenfolge).
-  - Präzision > Recall: nur (near-)exakt matchen (ratio ≥ MATCH_THRESHOLD), sonst fängt der Router
-    normale LLM-Anfragen fälschlich ab.
+  - Bei mehreren Treffern gewinnt der BESTE (Exact vor 1-Edit; Gleichstand → erster = Anlege-Reihenfolge).
+  - Präzision > Recall: nur exakt oder 1-Zeichen-Tippfehler matchen, sonst fängt der Router normale
+    LLM-Anfragen fälschlich ab. **KEIN difflib-ratio** — das matcht Antonyme (Licht AN vs AUS) in langen
+    Sätzen fälschlich (ratio ~0.93) und würde die GEGENTEIL-Aktion feuern. Edit-Distanz ≤1 ist immun
+    (an→aus sind 2 Edits); der Space-invariante Key fängt „kino abend" ≈ „kinoabend".
 
 Store in HAs `.storage` (→ HA-Backup), analog store.py (Exposure). Safemode-konsistent: beim Feuern
 greift dasselbe effektive Deny wie im Executor — ein Satz auf Schloss/Alarm feuert nur bei unsafe_mode.
 """
 from __future__ import annotations
 
-import difflib
 import logging
 import re
 import uuid
@@ -31,22 +32,60 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_KEY = "hestia.sentences"
 STORAGE_VERSION = 1
 
-MATCH_THRESHOLD = 0.9        # near-exact; darunter kein Router-Treffer (LLM übernimmt)
+MAX_EDITS = 1               # erlaubte Levenshtein-Distanz (1 Zeichen); antonym-sicher (an/aus = 2 Edits)
 MODES = ("on", "off", "toggle")
 DEFAULT_RESPONSE = "Ok."
 _UNSAFE_TEXT = "Das kann ich aus Sicherheitsgründen nicht."
 _FIRE_FAIL_TEXT = "Das hat leider nicht geklappt."
 
-# Umlaut-Faltung + Satzzeichen-Strip: beide Seiten (Eingabe & gespeicherter Satz) gleich normalisiert,
-# darum ist die konkrete Faltung egal, solange konsistent (ä→a, ö→o, ü→u, ß→ss).
+# Domains, die der rohe Router ZUVERLÄSSIG feuern kann (Picker UI + WS-Validierung teilen diese Liste).
+# scene/cover/button haben eigene Services (Dispatch in async_fire); der Rest geht generisch über
+# homeassistant.turn_on/off/toggle. Bewusst NICHT dabei — der generische Pfad no-opt dort still (meldet
+# aber „Erfolg"): lock/alarm (Safety + eigene lock/arm-Verben = Executor-Sache), vacuum (start/stop statt
+# turn_*), automation (turn_on = AKTIVIEREN ≠ auslösen). Die gehören in einen späteren, expliziten Pass.
+SUPPORTED_DOMAINS = frozenset({
+    "scene", "script", "cover", "button", "input_button",
+    "light", "switch", "fan", "input_boolean", "media_player",
+    "climate", "humidifier", "siren", "group",
+})
+_COVER_SVC = {"on": "open_cover", "off": "close_cover", "toggle": "toggle"}
+_GENERIC_SVC = {"on": "turn_on", "off": "turn_off", "toggle": "toggle"}
+
+# Umlaut-Faltung: beide Seiten gleich normalisiert, darum ist die konkrete Faltung egal (ä→a, ö→o, ü→u, ß→ss).
 _UMLAUT = str.maketrans({"ä": "a", "ö": "o", "ü": "u", "ß": "ss"})
 
 
-def normalize(text: str) -> str:
-    """lower → Umlaute falten → Satzzeichen zu Space → Whitespace kollabieren → trim."""
-    t = (text or "").lower().translate(_UMLAUT)
-    t = re.sub(r"[^\w ]+", " ", t, flags=re.UNICODE)   # Satzzeichen/Sonderzeichen weg
-    return re.sub(r"\s+", " ", t).strip()
+def _norm_key(text: str) -> str:
+    """Match-Key: lower → Umlaute falten → ALLES außer Wortzeichen raus (inkl. Leerzeichen).
+
+    Space-Strip macht „kino abend" == „kinoabend" (Join/Split-Varianz) per Exact-Match — ohne das
+    gefährliche difflib-ratio. Antonyme bleiben getrennt: „lichtanimwohnzimmer" ≠ „lichtausimwohnzimmer"."""
+    return re.sub(r"[^\w]+", "", (text or "").lower().translate(_UMLAUT), flags=re.UNICODE)
+
+
+def _edit_le1(a: str, b: str) -> bool:
+    """True wenn Levenshtein(a, b) ≤ 1 (früh-abbrechend, für kurze Sätze billig)."""
+    if a == b:
+        return True
+    la, lb = len(a), len(b)
+    if abs(la - lb) > 1:
+        return False
+    if la > lb:                       # sicherstellen la ≤ lb
+        a, b, la, lb = b, a, lb, la
+    i = j = 0
+    edited = False
+    while i < la and j < lb:
+        if a[i] == b[j]:
+            i += 1; j += 1
+        elif edited:
+            return False              # zweite Abweichung → Distanz > 1
+        else:
+            edited = True
+            if la == lb:              # Substitution
+                i += 1; j += 1
+            else:                     # Insertion in b
+                j += 1
+    return True                       # ≤1 Rest-Zeichen ist genau 1 Edit
 
 
 class SentenceStore:
@@ -94,56 +133,66 @@ class SentenceStore:
             return True
         return False
 
-    def match(self, text: str) -> tuple[dict, float] | None:
-        """Bester (near-)exakter Treffer über alle Sätze/Phrasen, oder None.
+    def match(self, text: str) -> tuple[dict, int] | None:
+        """Bester Treffer über alle Sätze/Phrasen, oder None. Rückgabe (record, edits).
 
-        ratio ≥ MATCH_THRESHOLD zählt; höchster Score gewinnt, strikt > → bei Gleichstand
-        gewinnt der zuerst angelegte Satz (Anlege-Reihenfolge)."""
+        Exact (0 Edits) schlägt 1-Edit; innerhalb gleicher Distanz gewinnt der zuerst angelegte
+        Satz (Anlege-Reihenfolge). Antonym-sicher, s. Modul-Docstring."""
         assert self._data is not None, "async_load() zuerst aufrufen"
-        norm = normalize(text)
-        if not norm:
+        key = _norm_key(text)
+        if not key:
             return None
-        best: dict | None = None
-        best_score = -1.0
+        near: dict | None = None      # bester 1-Edit-Kandidat (erster in Anlege-Reihenfolge)
         for rec in self._data:
             for ph in rec.get("phrases", []):
-                np = normalize(ph)
-                if not np:
+                pk = _norm_key(ph)
+                if not pk:
                     continue
-                score = 1.0 if np == norm else difflib.SequenceMatcher(None, np, norm).ratio()
-                if score >= MATCH_THRESHOLD and score > best_score:
-                    best_score, best = score, rec
-        return (best, best_score) if best is not None else None
+                if pk == key:
+                    return (rec, 0)   # exakt — kann nicht besser werden
+                if near is None and MAX_EDITS >= 1 and _edit_le1(pk, key):
+                    near = rec
+        return (near, 1) if near is not None else None
 
     async def _async_save(self) -> None:
         await self._store.async_save({"sentences": self._data})
 
 
 async def async_fire(hass: HomeAssistant, rec: dict, context: Context, deny: list) -> str:
-    """Ziel-Aktion feuern, Bestätigungstext zurückgeben.
+    """Ziel-Aktion per-Domain feuern, Bestätigungstext zurückgeben.
 
+    Per-Domain-Dispatch, weil HAs generisches `homeassistant.turn_on/off/toggle` bei Domains OHNE
+    turn_*-Service (cover/button/…) STILL no-opt (kein Fehler → sonst falscher „Erfolg"):
+      - scene            → scene.turn_on (Szenen kennen nur turn_on)
+      - cover            → open_cover / close_cover / toggle
+      - button/input_button → press (Modus ohne Wirkung — momentane Aktion)
+      - Rest             → homeassistant.turn_on/off/toggle (light/switch/fan/…)
     Safemode-konsistent: liegt die Ziel-Domain im effektiven Deny (lock/alarm ohne unsafe_mode),
-    NICHT feuern → Sicherheits-Absage (spiegelt Executor `err_unsafe`). Szenen kennen nur
-    turn_on; alles andere geht über `homeassistant.turn_on/off/toggle` (domain-generisch)."""
+    NICHT feuern → Sicherheits-Absage (spiegelt Executor `err_unsafe`)."""
     target = rec.get("target_entity", "")
     domain = target.split(".")[0]
     if domain in (deny or ()):
         return _UNSAFE_TEXT
     mode = rec.get("mode", "on")
+    if domain == "scene":
+        call_domain, service = "scene", "turn_on"
+    elif domain == "cover":
+        call_domain, service = "cover", _COVER_SVC.get(mode, "open_cover")
+    elif domain in ("button", "input_button"):
+        call_domain, service = domain, "press"
+    else:
+        call_domain, service = "homeassistant", _GENERIC_SVC.get(mode, "turn_on")
     try:
-        if domain == "scene":
-            await hass.services.async_call("scene", "turn_on", {"entity_id": target},
-                                           blocking=True, context=context)
-        else:
-            svc = {"on": "turn_on", "off": "turn_off", "toggle": "toggle"}.get(mode, "turn_on")
-            await hass.services.async_call("homeassistant", svc, {"entity_id": target},
-                                           blocking=True, context=context)
+        await hass.services.async_call(call_domain, service, {"entity_id": target},
+                                       blocking=True, context=context)
     except Exception as e:  # noqa: BLE001 — Ziel weg / Service-Fehler → ehrlicher Fallback
-        _LOGGER.warning("Hestia custom-sentence fire failed (%s → %s): %s", target, mode, e)
+        _LOGGER.warning("Hestia custom-sentence fire failed (%s → %s.%s): %s",
+                        target, call_domain, service, e)
         return _FIRE_FAIL_TEXT
     return (rec.get("response") or "").strip() or DEFAULT_RESPONSE
 
 
-def get_sentence_store(hass: HomeAssistant) -> SentenceStore:
-    """Den (einen) SentenceStore aus hass.data holen (single-instance je HA-Config)."""
-    return hass.data.setdefault(DOMAIN, {})["_sentences"]
+def get_sentence_store(hass: HomeAssistant) -> SentenceStore | None:
+    """Den (einen) SentenceStore aus hass.data holen (single-instance je HA-Config), oder None,
+    falls (noch) nicht geladen — der Aufrufer degradiert dann (Router überspringen)."""
+    return hass.data.get(DOMAIN, {}).get("_sentences")

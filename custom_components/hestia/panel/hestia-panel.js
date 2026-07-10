@@ -1340,9 +1340,10 @@ class HestiaPanel extends HTMLElement {
 
   // Ziel-Kandidaten: aktionsfähige Domains aus hass.states (Szene/Skript/Schalter/Licht/…).
   _scTargets() {
-    const DOMS = ["scene", "script", "switch", "light", "fan", "input_boolean", "media_player",
-      "cover", "climate", "automation", "button", "input_button", "vacuum", "humidifier", "siren",
-      "lock", "alarm_control_panel"];
+    // Muss mit sentences.SUPPORTED_DOMAINS (Server) übereinstimmen — Domains, die async_fire
+    // zuverlässig feuert. Bewusst NICHT: lock/alarm (Safety), vacuum, automation (aktivieren ≠ auslösen).
+    const DOMS = ["scene", "script", "cover", "button", "input_button", "light", "switch", "fan",
+      "input_boolean", "media_player", "climate", "humidifier", "siren", "group"];
     const q = this._scSearch.trim().toLowerCase();
     const out = [];
     for (const eid in (this._hass.states || {})) {
@@ -1386,7 +1387,7 @@ class HestiaPanel extends HTMLElement {
         </div>
         <div class="field"><label>Aktion</label>
           ${seg("mode", d.mode, [["on", "Einschalten"], ["off", "Ausschalten"], ["toggle", "Umschalten"]])}
-          <div class="hint">Szenen/Skripte werden immer ausgelöst (turn_on) — Modus ist dort ohne Wirkung.</div>
+          <div class="hint">Szenen &amp; Buttons lösen immer aus (Modus ohne Wirkung); Rollläden fahren auf/zu/um.</div>
         </div>
         <div class="field"><label>Antwort <span class="hint">— optional; leer → „Ok."</span></label>
           <input class="inp" id="scResp" value="${esc(d.response)}" placeholder="Ok."></div>
