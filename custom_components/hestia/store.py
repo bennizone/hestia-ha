@@ -24,12 +24,17 @@ STORAGE_VERSION = 1
 
 # Feld-Defaults eines Entity-Records. `added`/`active` sind die Zustands-Flags;
 # der Rest sind kuratierbare Metadaten, die das Deaktivieren überleben.
+# `limit_min`/`limit_max` = reale Prozent-Range fürs WRITE-Mapping (Arduino map(), s. mapping.py);
+# Default 0/100 = Identität (kein Mapping). Nur für pct-steuerbare Entitäten (Licht/Medien/Rollladen/Lüfter)
+# semantisch relevant; für den Rest schlicht ignoriert.
 _RECORD_DEFAULTS: dict = {
     "added": False,
     "active": True,
     "llm_name": "",      # leer → house_builder fällt auf HA-friendly_name zurück
     "aliases": [],
     "description": "",
+    "limit_min": 0,
+    "limit_max": 100,
 }
 # Nur diese Felder dürfen per WS-`set` gepatcht werden.
 PATCHABLE = frozenset(_RECORD_DEFAULTS.keys())
@@ -84,6 +89,12 @@ class ExposureStore:
         if "aliases" in clean:
             clean["aliases"] = [a.strip() for a in clean["aliases"]
                                 if isinstance(a, str) and a.strip()]
+        for k in ("limit_min", "limit_max"):     # int + auf 0..100 klemmen; Unfug fällt raus
+            if k in clean:
+                try:
+                    clean[k] = max(0, min(100, int(clean[k])))
+                except (TypeError, ValueError):
+                    del clean[k]
         cur = dict(self._data.get(entity_id, {}))
         cur.update(clean)
         self._data[entity_id] = cur

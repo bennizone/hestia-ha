@@ -24,6 +24,7 @@ import re
 from homeassistant.core import HomeAssistant, Context
 from homeassistant.helpers import intent
 
+from . import mapping
 from .hestia_cap import result as R
 
 _LOGGER = logging.getLogger(__name__)
@@ -82,9 +83,9 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
         if verb == "stop":
             return await _stop(hass, eids, names, exposure, context)
         if verb == "set_state":
-            return await _set_state(hass, eids, names, args, context)
+            return await _set_state(hass, eids, names, args, exposure, context)
         if verb == "adjust":
-            return await _adjust(hass, eids, names, args, context)
+            return await _adjust(hass, eids, names, args, exposure, context)
     except Exception as e:  # noqa: BLE001 — HA-Service-Fehler → ehrliches Result, kein Crash
         _LOGGER.warning("Hestia executor %s failed: %s", verb, e)
         return R.err_timeout(args.get("name") or args.get("domain") or "")
@@ -120,7 +121,22 @@ async def _stop(hass, eids, names, exposure, context) -> dict:
     return R.shape_turn(names)
 
 
-async def _set_state(hass, eids, names, args, context) -> dict:
+async def _dispatch_pct(hass, domain, service, param, eids, exposure, canon, context, scale=1) -> None:
+    """pct-Attribut an HA dispatchen — pro Entität Limit-Mapping (virtuell `canon` → echte Range).
+
+    Nach dem gemappten *echten* Wert gebündelt (i.d.R. genau 1 Bucket, wenn keine/gleiche Limits
+    → identischer Service-Call wie zuvor). Das Result echot weiterhin `canon` (virtuell) — s. Aufrufer."""
+    buckets: dict[int, list] = {}
+    for e in eids:
+        real = mapping.apply(canon, exposure.get(e, {}).get("limit"))
+        buckets.setdefault(real, []).append(e)
+    for real, es in buckets.items():
+        val = real * scale if scale != 1 else real
+        await hass.services.async_call(domain, service, {"entity_id": es, param: val},
+                                       blocking=True, context=context)
+
+
+async def _set_state(hass, eids, names, args, exposure, context) -> dict:
     attr, val = args["attribute"], args["value"]
     canon, unit, err = R.set_value_or_error(attr, val)   # zentrale Wert-Semantik (B3/invalid_value)
     if err:
@@ -128,22 +144,16 @@ async def _set_state(hass, eids, names, args, context) -> dict:
     # Service-Dispatch: HA-spezifisch, aus (attr, canon) abgeleitet. Nur implementierte Attribute;
     # neue Attribute (hvac_mode/preset/lock/alarm/oscillate/tilt/humidity/value/effect/option) sind
     # serve-seitig DEFERRED (Executor-Branches = Phase 1b/3) → ehrlich not_controllable.
+    # pct-Attrs laufen über _dispatch_pct (Limit-Mapping virtuell→real); Result bleibt virtuell (canon).
     if attr == "brightness":
-        await hass.services.async_call("light", "turn_on",
-                                       {"entity_id": eids, "brightness_pct": canon},
-                                       blocking=True, context=context)
+        await _dispatch_pct(hass, "light", "turn_on", "brightness_pct", eids, exposure, canon, context)
     elif attr == "volume":
-        await hass.services.async_call("media_player", "volume_set",
-                                       {"entity_id": eids, "volume_level": canon / 100},
-                                       blocking=True, context=context)
+        await _dispatch_pct(hass, "media_player", "volume_set", "volume_level", eids, exposure, canon,
+                            context, scale=0.01)
     elif attr == "position":
-        await hass.services.async_call("cover", "set_cover_position",
-                                       {"entity_id": eids, "position": canon},
-                                       blocking=True, context=context)
+        await _dispatch_pct(hass, "cover", "set_cover_position", "position", eids, exposure, canon, context)
     elif attr == "fan_speed":
-        await hass.services.async_call("fan", "set_percentage",
-                                       {"entity_id": eids, "percentage": canon},
-                                       blocking=True, context=context)
+        await _dispatch_pct(hass, "fan", "set_percentage", "percentage", eids, exposure, canon, context)
     elif attr == "temperature":
         await hass.services.async_call("climate", "set_temperature",
                                        {"entity_id": eids, "temperature": float(canon)},
@@ -169,24 +179,42 @@ async def _set_state(hass, eids, names, args, context) -> dict:
     return R.shape_set_state(names, canon, unit)
 
 
-async def _adjust(hass, eids, names, args, context) -> dict:
-    """Relatives Verstellen. Echot den RESULTIERENDEN Wert zurück (Vorher/Nachher-Read via
-    result.adj_read), damit die Antwort ihn truthful zitieren kann; at_limit-Logik = shape_adjust."""
+def _adj_before(hass, eids, attr, exposure) -> tuple:
+    """(before_virtuell, before_real, unit) pro Entität. Für pct-Attrs mit Limit wird der Read
+    in den virtuellen 0–100-Raum umgerechnet (das Echo lebt virtuell → train==serve). Ohne Limit
+    ist virtuell == real (Identität) → Verhalten unverändert."""
+    before, real_before, unit = {}, {}, None
+    for e in eids:
+        v, u = R.adj_read(_state_read(hass, e), attr)
+        real_before[e] = v
+        lim = exposure.get(e, {}).get("limit") if attr in mapping.PCT_ATTRS else None
+        before[e] = mapping.to_virtual(v, lim) if lim else v
+        unit = unit or u
+    return before, real_before, unit
+
+
+async def _adjust(hass, eids, names, args, exposure, context) -> dict:
+    """Relatives Verstellen. Echot den RESULTIERENDEN (virtuellen) Wert zurück (Vorher/Nachher-Read
+    via result.adj_read), damit die Antwort ihn truthful zitieren kann; at_limit-Logik = shape_adjust.
+
+    Limit-Mapping (mapping.py): brightness skaliert den Schritt auf die Range, position verstellt im
+    virtuellen Raum und mapped aufs echte Gerät. Echo bleibt virtuell. temperature (°C) und volume
+    (grobe HA-up/down-Schritte) sowie fan_speed werden NICHT gemappt (unverändert)."""
     attr = args["attribute"]
     direction = args.get("direction", "up")
     amount = args.get("amount", "some")
-    unit = None
-    before = {}
-    for e in eids:
-        v, u = R.adj_read(_state_read(hass, e), attr)
-        before[e] = v
-        unit = unit or u
+    before, real_before, unit = _adj_before(hass, eids, attr, exposure)
 
     if attr == "brightness":
-        step = int(R.adjust_delta("brightness", amount, direction))
-        await hass.services.async_call("light", "turn_on",
-                                       {"entity_id": eids, "brightness_step_pct": step},
-                                       blocking=True, context=context)
+        vstep = int(R.adjust_delta("brightness", amount, direction))   # virtueller Schritt
+        buckets: dict[int, list] = {}                                  # nach echtem (skaliertem) Schritt bündeln
+        for e in eids:
+            rstep = mapping.scale_step(vstep, exposure.get(e, {}).get("limit"))
+            buckets.setdefault(rstep, []).append(e)
+        for rstep, es in buckets.items():
+            await hass.services.async_call("light", "turn_on",
+                                           {"entity_id": es, "brightness_step_pct": rstep},
+                                           blocking=True, context=context)
     elif attr == "volume":
         svc = "volume_up" if direction == "up" else "volume_down"
         await hass.services.async_call("media_player", svc, {"entity_id": eids},
@@ -194,25 +222,37 @@ async def _adjust(hass, eids, names, args, context) -> dict:
     elif attr in ("temperature", "position", "fan_speed"):
         delta = R.adjust_delta(attr, amount, direction)
         for eid in eids:
-            cur = before.get(eid)
-            if cur is None:
-                continue
             if attr == "temperature":
+                cur = real_before.get(eid)
+                if cur is None:
+                    continue
                 await hass.services.async_call("climate", "set_temperature",
                                                {"entity_id": eid, "temperature": float(cur) + delta},
                                                blocking=True, context=context)
             elif attr == "fan_speed":       # Reconcile 2026-07-10: Generator trainiert adjust(fan_speed)
+                cur = real_before.get(eid)
+                if cur is None:
+                    continue
                 await hass.services.async_call("fan", "set_percentage",
                                                {"entity_id": eid, "percentage": max(0, min(100, int(cur + delta)))},
                                                blocking=True, context=context)
-            else:
+            else:                           # position — virtuell verstellen, auf echte Range mappen
+                vcur = before.get(eid)
+                if vcur is None:
+                    continue
+                vtar = max(0, min(100, int(vcur + delta)))
+                real_tar = mapping.apply(vtar, exposure.get(eid, {}).get("limit"))
                 await hass.services.async_call("cover", "set_cover_position",
-                                               {"entity_id": eid, "position": max(0, min(100, int(cur + delta)))},
+                                               {"entity_id": eid, "position": max(0, min(100, real_tar))},
                                                blocking=True, context=context)
     else:
         return R.err_not_controllable(attr)
 
-    after = {e: R.adj_read(_state_read(hass, e), attr)[0] for e in eids}
+    after = {}
+    for e in eids:
+        v = R.adj_read(_state_read(hass, e), attr)[0]
+        lim = exposure.get(e, {}).get("limit") if attr in mapping.PCT_ATTRS else None
+        after[e] = mapping.to_virtual(v, lim) if lim else v
     return R.shape_adjust(names, before, after, eids, unit)
 
 

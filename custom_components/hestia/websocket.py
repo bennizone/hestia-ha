@@ -63,6 +63,8 @@ def _enrich(hass: HomeAssistant, entry, record: dict, regs) -> dict:
         "description": record["description"],
         "added": record["added"],
         "active": record["active"],
+        "limit_min": record["limit_min"],           # WRITE-Mapping-Range (pct-Domains); 0/100 = kein Mapping
+        "limit_max": record["limit_max"],
         "available": bool(st) and raw not in _UNAVAILABLE,
         "state": raw,
     }

@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import (area_registry as ar, device_registry as dr,
                                    entity_registry as er, floor_registry as fr)
 
+from . import mapping
 from .hestia_cap import House, Area, Entity
 from .store import get_store
 
@@ -82,6 +83,9 @@ def build_exposure(hass: HomeAssistant) -> dict[str, dict]:
             "area": area_name,
             "floor": floor_name,
             "expose": True,
+            # SERVE-only: WRITE-Mapping-Range (mapping.norm → Tuple|None). Der geteilte Result-Layer
+            # liest diesen Key NIE → kein Einfluss aufs Tool-JSON (train==serve bleibt intakt).
+            "limit": mapping.norm(srec["limit_min"], srec["limit_max"]),
         }
     return out
 

@@ -40,6 +40,15 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g,
 const domLabel = (d) => DOM_LABEL[d] || d;
 const domIcon = (d) => svg(DOM_ICON[d] || ICON_DOT);
 
+// pct-steuerbare Domains → welches Attribut das WRITE-Limit-Mapping betrifft (Spiegel mapping.PCT_ATTRS).
+// Das Modell bleibt immer im 0–100-Raum; die Range mappt nur den an HA gesendeten Steuerwert.
+const PCT_ATTR = { light: "Helligkeit", media_player: "Lautstärke", cover: "Position", fan: "Stufe" };
+// Spiegel von mapping.apply / mapping.norm (Python) — nur für die Live-Vorschau.
+const mapReal = (v, lo, hi) => Math.round(lo + Math.max(0, Math.min(100, v)) / 100 * (hi - lo));
+const rangeState = (lo, hi) =>
+  (lo === 0 && hi === 100) ? "identity"
+  : !(lo >= 0 && hi <= 100 && lo < hi) ? "invalid" : "mapped";
+
 const STYLE = `
 :host {
   --sans: Roboto, "Helvetica Neue", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -239,6 +248,21 @@ button, input, textarea { font: inherit; color: inherit; }
 .compiler .ch svg { width: 15px; height: 15px; }
 .compiler pre { margin: 0; padding: 12px 13px; font-family: var(--mono); font-size: 11.5px; line-height: 1.65; color: var(--ink-2); white-space: pre-wrap; word-break: break-word; }
 .compiler pre b { color: var(--ink); font-weight: 600; }
+
+/* ── Limits & Mapping (WRITE-Range, Geräte-Seite — NICHT was das Modell sieht) ── */
+.limits .rng-lead { font-size: 11.5px; color: var(--ink-3); line-height: 1.5; margin: -1px 0 2px; }
+.rng-row { display: flex; align-items: center; gap: 10px; }
+.rng-inp { display: inline-flex; align-items: center; gap: 6px; flex: 1;
+  border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: var(--ground); padding: 0 11px; }
+.rng-inp span { font-size: 11px; color: var(--ink-3); letter-spacing: .02em; }
+.rng-inp input { border: none; background: none; padding: 9px 0; width: 100%; text-align: right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; }
+.rng-inp:focus-within { box-shadow: var(--focus); border-color: var(--accent); }
+.rng-inp input:focus-visible { box-shadow: none; outline: none; }
+.rng-arrow { color: var(--ink-3); font-weight: 600; }
+.rng-preview { font-size: 11.5px; font-family: var(--mono); color: var(--ink-3); padding: 4px 2px 0; line-height: 1.6; }
+.rng-preview.mapped { color: var(--ink-2); }
+.rng-preview.mapped b { color: var(--accent-strong); font-weight: 600; }
+.rng-preview.invalid { color: var(--warn); }
 
 .offline-note { display: flex; gap: 10px; align-items: flex-start; padding: 11px 13px; border-radius: var(--r);
   background: var(--warn-soft); border: 1px solid color-mix(in srgb, var(--warn) 32%, transparent); font-size: 12.5px; line-height: 1.5; color: var(--ink-2); }
@@ -561,6 +585,7 @@ class HestiaPanel extends HTMLElement {
           <label>Beschreibung <span class="hint">— optionaler Kontext</span></label>
           <textarea class="ta" id="dDesc" placeholder="z. B. „Ambientelicht" meint die Stehlampe, nicht diese.">${esc(d.description)}</textarea>
         </div>
+        ${this._limitsHtml(r, d)}
         <div class="compiler">
           <div class="ch">${svg('<path d="m7 8-4 4 4 4M17 8l4 4-4 4M14 4l-4 16"/>')}So kommt es beim Modell an</div>
           <pre>${this._compilerHtml(r, d)}</pre>
@@ -573,6 +598,33 @@ class HestiaPanel extends HTMLElement {
         <button class="remove-link" id="dRemove">Aus Hestia entfernen</button>
       </div>
     </aside>`;
+  }
+
+  // ── Limits & Mapping (nur pct-steuerbare Domains) ──
+  _limitsHtml(r, d) {
+    const label = PCT_ATTR[r.domain];
+    if (!label) return "";                       // Sensor/Schloss/Klima etc.: keine pct-Range
+    const lo = d.limit_min, hi = d.limit_max;
+    const st = rangeState(lo, hi);
+    let preview;
+    if (st === "identity")
+      preview = `Kein Mapping — das Gerät nutzt den vollen 0–100&nbsp;%-Bereich.`;
+    else if (st === "invalid")
+      preview = `Untergrenze muss unter der Obergrenze liegen.`;
+    else {
+      const ex = (v) => `Modell <b>${v}</b> → Gerät <b>${mapReal(v, lo, hi)}%</b>`;
+      preview = `${ex(0)}  ·  ${ex(50)}  ·  ${ex(100)}`;
+    }
+    return `<div class="field limits">
+      <label>${label}-Bereich <span class="hint">— echte Gerätegrenzen</span></label>
+      <div class="rng-lead">Das Modell bleibt bei 0–100&nbsp;%; der Executor mappt auf diese Range und meldet den <b>angeforderten</b> Wert zurück. Fürs Modell unsichtbar (kein Retraining).</div>
+      <div class="rng-row">
+        <div class="rng-inp"><span>ab</span><input type="number" min="0" max="100" step="1" id="dLimMin" value="${lo}"><span>%</span></div>
+        <span class="rng-arrow">–</span>
+        <div class="rng-inp"><span>bis</span><input type="number" min="0" max="100" step="1" id="dLimMax" value="${hi}"><span>%</span></div>
+      </div>
+      <div class="rng-preview ${st}" id="limPreview">${preview}</div>
+    </div>`;
   }
 
   _compilerHtml(r, d) {
@@ -594,6 +646,11 @@ class HestiaPanel extends HTMLElement {
     if (nm) nm.addEventListener("input", (e) => { this._draft.llm_name = e.target.value; this._refreshCompiler(); });
     const desc = q("dDesc");
     if (desc) desc.addEventListener("input", (e) => { this._draft.description = e.target.value; this._refreshCompiler(); });
+    const clampPct = (v) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+    const lmin = q("dLimMin");
+    if (lmin) lmin.addEventListener("input", (e) => { this._draft.limit_min = clampPct(e.target.value); this._refreshLimitPreview(); });
+    const lmax = q("dLimMax");
+    if (lmax) lmax.addEventListener("input", (e) => { this._draft.limit_max = clampPct(e.target.value); this._refreshLimitPreview(); });
     const ai = q("aliasInp");
     if (ai) ai.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && e.target.value.trim()) {
@@ -620,6 +677,20 @@ class HestiaPanel extends HTMLElement {
     if (off && (this._draft.active && !r.available) === false) off.remove();
   }
 
+  _refreshLimitPreview() {
+    const el = this._content.querySelector("#limPreview");
+    if (!el) return;
+    const { limit_min: lo, limit_max: hi } = this._draft;
+    const st = rangeState(lo, hi);
+    el.className = "rng-preview " + st;
+    if (st === "identity") el.innerHTML = "Kein Mapping — das Gerät nutzt den vollen 0–100&nbsp;%-Bereich.";
+    else if (st === "invalid") el.innerHTML = "Untergrenze muss unter der Obergrenze liegen.";
+    else {
+      const ex = (v) => `Modell <b>${v}</b> → Gerät <b>${mapReal(v, lo, hi)}%</b>`;
+      el.innerHTML = `${ex(0)}  ·  ${ex(50)}  ·  ${ex(100)}`;
+    }
+  }
+
   _rerenderDetail(focusAlias) {
     // Nur die Detail-Spalte neu bauen (Liste unangetastet), dann optional Alias-Input fokussieren.
     const holder = this._content.querySelector(".col.detail");
@@ -640,6 +711,8 @@ class HestiaPanel extends HTMLElement {
       aliases: [...(r.aliases || [])],
       description: r.description || "",
       active: r.active,
+      limit_min: r.limit_min ?? 0,
+      limit_max: r.limit_max ?? 100,
     };
     this._renderMain();
     if (this._isNarrow() && !keepSheet) this.classList.add("detail-open");
@@ -652,10 +725,14 @@ class HestiaPanel extends HTMLElement {
     const nameOut = (d.llm_name.trim() && d.llm_name.trim() !== r.ha_name) ? d.llm_name.trim() : "";
     const btn = this._content.querySelector("#dSave");
     if (btn) { btn.disabled = true; btn.textContent = "Speichern …"; }
+    const patch = { active: d.active, llm_name: nameOut, aliases: d.aliases, description: d.description.trim() };
+    if (PCT_ATTR[r.domain]) {                     // Limit-Range nur für pct-steuerbare Domains persistieren
+      patch.limit_min = d.limit_min;
+      patch.limit_max = d.limit_max;
+    }
     try {
       const updated = await this._hass.callWS({
-        type: "hestia/exposure/set", entity_id: eid,
-        patch: { active: d.active, llm_name: nameOut, aliases: d.aliases, description: d.description.trim() },
+        type: "hestia/exposure/set", entity_id: eid, patch,
       });
       const idx = this._rows.findIndex((x) => x.entity_id === eid);
       if (idx >= 0) this._rows[idx] = updated;
