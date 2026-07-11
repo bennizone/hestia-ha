@@ -17,7 +17,8 @@ UNGROUPED = None  # Areas ohne Etagen-Zuordnung
 class Entity:
     name: str            # kanonischer Anzeigename
     domain: str
-    aliases: tuple = ()  # weitere Namen (Resolver-Grounding, nicht gerendert)
+    aliases: tuple = ()  # weitere Namen (Resolver-Grounding + ab r3 gerendert „auch: …")
+    description: str = ""  # freitext-Zweck-Hinweis (ab r3 gerendert; vage/umschreibende Auflösung)
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,8 @@ class House:
     @staticmethod
     def _mk_entity(e: dict) -> Entity:
         names = e.get("names") or ([e["name"]] if e.get("name") else [])
-        return Entity(name=names[0], domain=e.get("domain", ""), aliases=tuple(names[1:]))
+        return Entity(name=names[0], domain=e.get("domain", ""), aliases=tuple(names[1:]),
+                      description=(e.get("description") or "").strip())
 
     @staticmethod
     def _mk_area(name: str, floor: str | None, ents: list) -> Area:

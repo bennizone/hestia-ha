@@ -13,7 +13,7 @@ from __future__ import annotations
 from .house import House
 from .tooldefs import all_tool_defs
 
-RENDER_VERSION = "r2"  # r2 = HA-native hierarchisch (Floor-Gruppierung)
+RENDER_VERSION = "r3"  # r3 = per-Entity Aliase („auch: …") + Beschreibungen; r2 = HA-native hierarchisch
 
 INSTRUCTIONS = (
     "Du bist Hestia, der Sprachassistent für dieses Smart Home. Wandle die Nutzer-Anfrage in eine "
@@ -25,10 +25,21 @@ INSTRUCTIONS = (
 )
 
 
+def _entity_token(e) -> str:
+    """Ein Gerät im Haus-Block. r3: Aliase („auch: …") + Beschreibung per Entität — damit das Modell
+    Alias-/vage Queries auf den kanonischen Namen abbildet. Ohne Extras byte-identisch zu r2."""
+    tok = f"{e.name}[{e.domain}]"
+    if e.aliases:
+        tok += " (auch: " + ", ".join(e.aliases) + ")"
+    if getattr(e, "description", ""):
+        tok += f" – „{e.description}“"
+    return tok
+
+
 def _area_line(area) -> str:
     name = area.name or "Ohne Raum"   # globale Entitäten (Schlösser/Wetter) ohne Area
     if area.entities:
-        devs = ", ".join(f"{e.name}[{e.domain}]" for e in area.entities)
+        devs = ", ".join(_entity_token(e) for e in area.entities)
         return f"- {name}: {devs}"
     return f"- {name}: (keine Geräte)"
 

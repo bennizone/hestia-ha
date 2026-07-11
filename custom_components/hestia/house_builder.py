@@ -79,6 +79,7 @@ def build_exposure(hass: HomeAssistant) -> dict[str, dict]:
         out[eid] = {
             "llm_name": srec["llm_name"] or _friendly_name(hass, entry),
             "aliases": list(srec["aliases"]) or _aliases(entry),
+            "description": (srec.get("description") or "").strip(),  # r3: gerendert (vage Auflösung)
             "domain": eid.split(".")[0],
             "area": area_name,
             "floor": floor_name,
@@ -103,7 +104,8 @@ def build_house(hass: HomeAssistant, exposure: dict[str, dict],
     Sortier-Semantik entspricht _from_ha_native (→ prefix-cache-stabil)."""
     groups: dict[tuple, list] = {}   # (floor, area_name) -> [Entity]
     for rec in exposure.values():
-        ent = Entity(name=rec["llm_name"], domain=rec["domain"], aliases=tuple(rec["aliases"]))
+        ent = Entity(name=rec["llm_name"], domain=rec["domain"], aliases=tuple(rec["aliases"]),
+                     description=rec.get("description", ""))
         groups.setdefault((rec["floor"], rec["area"] or ""), []).append(ent)
     areas = [Area(name=area_name, floor=floor,
                   entities=tuple(sorted(ents, key=lambda x: x.name)))
