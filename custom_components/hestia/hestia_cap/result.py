@@ -18,6 +18,7 @@ Fehler-Codes: RESULT_SCHEMA §3 (additiv-only Enum) — hier die einzige Bau-Que
 from __future__ import annotations
 
 import difflib
+from datetime import date as _date
 from typing import Protocol, runtime_checkable
 
 from .schema import COLOR_SYNONYMS, COLOR_WORDS, SETTABLE_ATTRS
@@ -371,6 +372,119 @@ def shape_datetime(now) -> dict:
                        "date": now.strftime("%Y-%m-%d"),
                        "time": now.strftime("%H:%M"),
                        "weekday": now.strftime("%A")})
+
+
+# ── Weather (Bahn-2, v23.2) — geteilter Block-Builder = Single-Source ──────────
+# Wetter ist ein Read-Verb (get_state attribute="weather"). Der Executor holt live
+# `weather.get_forecasts`, der Generator echte InfluxDB-Folgetage → BEIDE mappen auf
+# denselben normalisierten Struct und rufen denselben Builder → byte-identischer Block
+# (train==serve, wie read_attr). Block sitzt im `value` eines readings-Eintrags →
+# kein RESULT_SCHEMA-Bruch (readings existiert, value darf String sein).
+#
+# ⚠ Regel (WEATHER_CONCEPT.md): der Builder nutzt NUR Felder, die BEIDE Quellen liefern
+# (condition, high, low). precipitation liefert InfluxDB NICHT → Regen QUALITATIV aus der
+# Condition (nie ein mm-Wert, den das Training nicht reproduziert). Actionable Aggregate
+# ("Schirm sinnvoll") stehen als GELABELTE Zeile, nicht inline pro Tag (350m band inline-
+# Urteile sonst an den falschen Tag — Probe 2026-07-11).
+_COND_DE = {
+    "clear-night": "klar", "cloudy": "bewölkt", "fog": "neblig", "hail": "Hagel",
+    "lightning": "Gewitter", "lightning-rainy": "Gewitter mit Regen",
+    "partlycloudy": "wechselnd bewölkt", "pouring": "starker Regen", "rainy": "regnerisch",
+    "snowy": "Schnee", "snowy-rainy": "Schneeregen", "sunny": "sonnig",
+    "windy": "windig", "windy-variant": "windig", "exceptional": "extrem",
+}
+# Nass = Schirm/Regenschutz sinnvoll (actionable-Aggregat + faktisches Per-Tag-Wort)
+_WET_RAIN = {"rainy", "pouring", "lightning-rainy", "lightning", "hail"}
+_WET_SNOW = {"snowy", "snowy-rainy"}
+_WD_DE = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]   # date.weekday(): Mo=0
+_REL_DE = ["Heute", "Morgen", "Übermorgen"]           # days[i] positional: 0=heute
+
+
+def _cond_de(cond) -> str:
+    return _COND_DE.get(cond, cond or "unbekannt")
+
+
+def _wd_de(iso_date) -> str | None:
+    """ISO-Datum ("2026-06-20") → deutsches Wochentags-Kürzel (locale-frei, deterministisch)."""
+    if not iso_date:
+        return None
+    try:
+        return _WD_DE[_date.fromisoformat(iso_date).weekday()]
+    except (TypeError, ValueError):
+        return None
+
+
+def _t(x):
+    """Temperatur-Anzeige: auf ganze Grad runden (Block ist Vorlese-Text, keine Präzision)."""
+    try:
+        return int(round(float(x)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _precip_word(cond) -> str:
+    if cond in _WET_SNOW:
+        return "Schnee"
+    if cond in _WET_RAIN:
+        return "Regen"
+    return "trocken"
+
+
+def _temp_range(lo, hi) -> str:
+    """Tief–Hoch als Vorlese-Spanne. Bei negativem Tief „bis" statt en-dash — „-4–1°" kollidiert
+    optisch (Minus/Strich); „-4 bis 1°" ist eindeutig. Sonst en-dash (gelockte Form „20–32°")."""
+    lo_i, hi_i = _t(lo), _t(hi)
+    if lo_i is not None and hi_i is not None and lo_i != hi_i:
+        sep = " bis " if lo_i < 0 else "–"
+        return f"{lo_i}{sep}{hi_i}°"
+    if hi_i is not None:
+        return f"{hi_i}°"
+    if lo_i is not None:
+        return f"{lo_i}°"
+    return "?"
+
+
+def build_weather_block(struct: dict) -> str:
+    """Normalisierter Wetter-Struct → tag-geankerter Vorlese-Block (B2). Pure/deterministisch.
+
+    struct = {"now": {"cond": str, "temp": num}?,           # optional aktueller Zustand
+              "days": [{"cond": str, "high": num, "low": num, "date": "YYYY-MM-DD"?}, ...]}
+    days sind POSITIONAL: [0]=heute, [1]=morgen, [2]=übermorgen (max 3 genutzt).
+    Gemeinsame Felder (train UND serve): cond/high/low. Regen qualitativ aus cond."""
+    lines = []
+    now = struct.get("now") or {}
+    if now.get("cond") is not None:
+        nt = _t(now.get("temp"))
+        temp = f", ~{nt}°" if nt is not None else ""
+        lines.append(f"Jetzt: {_cond_de(now.get('cond'))}{temp}.")
+
+    days = (struct.get("days") or [])[:3]
+    for i, d in enumerate(days):
+        rel = _REL_DE[i] if i < len(_REL_DE) else f"Tag+{i}"
+        wd = _wd_de(d.get("date"))
+        head = f"{rel} ({wd})" if wd else rel
+        span = _temp_range(d.get("low"), d.get("high"))
+        lines.append(f"{head}: {_cond_de(d.get('cond'))}, {span}, {_precip_word(d.get('cond'))}")
+
+    # ── Aggregate (deterministisch vorgebacken, gelabelt — nicht inline) ──
+    hi_days = [(i, _t(d.get("high"))) for i, d in enumerate(days) if _t(d.get("high")) is not None]
+    if len(days) >= 2 and hi_days:
+        wi, wh = max(hi_days, key=lambda t: t[1])
+        rel = (_REL_DE[wi] if wi < len(_REL_DE) else f"Tag+{wi}").lower()
+        lines.append(f"Wärmster Tag: {rel} ({wh}°).")
+    wet = [(_REL_DE[i] if i < len(_REL_DE) else f"Tag+{i}").lower()
+           for i, d in enumerate(days) if d.get("cond") in _WET_RAIN or d.get("cond") in _WET_SNOW]
+    if wet:
+        lines.append(f"Schirm sinnvoll: {', '.join(wet)}.")
+
+    return "\n".join(lines)
+
+
+def shape_weather(name: str, struct: dict) -> dict:
+    """Read-Result fürs Wetter: der Block sitzt im `value` eines readings-Eintrags.
+    Beide Seiten (Executor/Generator) rufen dies → identisches Result-JSON (train==serve)."""
+    return ok(readings=[{"name": name, "attribute": "weather",
+                         "value": build_weather_block(struct)}])
 
 
 def shape_get_state(attr, aggregate, reads: list) -> dict:

@@ -265,6 +265,9 @@ async def _get_state(hass, args, exposure) -> dict:
         from homeassistant.util import dt as dt_util
         return R.shape_datetime(dt_util.now())
 
+    if attr == "weather":
+        return await _get_weather(hass, args, exposure)
+
     eids, err = R.resolve(args, exposure)
     if err:
         return err
@@ -281,6 +284,65 @@ async def _get_state(hass, args, exposure) -> dict:
     if res.get("error") == "no_data":   # query erden (Serve-Parität)
         res["query"] = args.get("name") or ""
     return res
+
+
+# ── Weather (v23.2): Read-Verb → live get_forecasts → geteilter Block-Builder ──
+async def _get_weather(hass, args, exposure) -> dict:
+    """attribute="weather" → Wetter-Entität auflösen, `weather.get_forecasts` (daily) holen,
+    auf den normalisierten Struct mappen und mit dem GETEILTEN R.build_weather_block (via
+    R.shape_weather) rendern → identisch zur Generator-Seite (train==serve).
+
+    Ziel: benannter/lokalisierter Standort, sonst Default = erste exponierte weather-Entität
+    (Multi-Standort fällt gratis aus dem Resolver, WEATHER_CONCEPT.md §Multi-Standort)."""
+    if args.get("name") or args.get("area") or args.get("floor"):
+        eids, err = R.resolve(args, exposure)
+        if err:
+            return err
+        eids = [e for e in eids if exposure[e]["domain"] == "weather"]
+    else:
+        eids = [e for e, rec in exposure.items() if rec["domain"] == "weather"]
+    if not eids:
+        return R.err_no_targets(args.get("name") or "")
+
+    eid = eids[0]   # MVP: Default-Standort = erste Wetter-Entität
+    struct = await _weather_struct(hass, eid)
+    if struct is None:   # Entität offline/unavailable ODER Forecast leer/fehlgeschlagen →
+        return R.err_unavailable(args.get("name") or "")   # ehrlicher Fehler statt Rumpf-Block,
+    #   den das Training NIE sah (train==serve-Verteilung: der Block hat IMMER ≥1 Forecast-Tag).
+    return R.shape_weather(exposure[eid]["llm_name"], struct)
+
+
+async def _weather_struct(hass, eid: str) -> dict | None:
+    """HA-Wetter-Entität → {now, days[≤3]} ODER None (→ err_unavailable). Nur die Felder, die auch
+    die Train-Quelle liefert (condition/high/low); precip wird NICHT in den Struct gereicht (Regen
+    qualitativ aus cond im Builder). days POSITIONAL [0]=heute (HA-daily-Forecast ist heute-first).
+
+    None bei: Entität fehlt/unavailable/unknown, get_forecasts-Fehler, ODER leerer Forecast. Damit
+    erreicht KEIN Rumpf-Block (nur `Jetzt:`-Zeile, 0 Tage) je das Modell — der geteilte Builder
+    bekommt serve-seitig garantiert dieselbe Form wie im Training (≥1 Tag)."""
+    st = hass.states.get(eid)
+    if st is None or st.state in ("unavailable", "unknown", "", None):
+        return None
+    try:
+        resp = await hass.services.async_call(
+            "weather", "get_forecasts",
+            {"entity_id": eid, "type": "daily"},
+            blocking=True, return_response=True)
+    except Exception:   # noqa: BLE001 — Wetter darf den Loop nie sprengen
+        _LOGGER.warning("weather.get_forecasts fehlgeschlagen für %s", eid, exc_info=True)
+        return None
+
+    forecast = ((resp or {}).get(eid) or {}).get("forecast") or []
+    days = []
+    for f in forecast[:3]:
+        days.append({"cond": f.get("condition"),
+                     "high": f.get("temperature"),   # daily: temperature = Tages-Hoch
+                     "low": f.get("templow"),         # templow = Nacht-Tief
+                     "date": (f.get("datetime") or "")[:10]})
+    if not days:                                      # leerer Forecast → err_unavailable (s.o.)
+        return None
+    now = {"cond": st.state, "temp": st.attributes.get("temperature")}
+    return {"now": now, "days": days}
 
 
 # ── Deferred-Verben: nativer Dispatch (B1=A) ──────────────────────────────────
