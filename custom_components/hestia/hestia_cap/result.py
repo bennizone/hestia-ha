@@ -213,6 +213,27 @@ def narrow_by_attr_domain(eids: list, attr, exposure: dict):
     return narrowed, None
 
 
+# value_query auf Sensoren: der Wire trägt die Metrik als `attribute` (device_class), eine Area/Floor-
+# Auflösung liefert aber ALLE Sensoren des Raums → auf die Metrik-tragenden Reads einengen (Raum → der
+# eine passende Sensor, oder leer → no_data). GETEILT train==serve (emit read_result + executor _get_state
+# rufen identisch auf). Nur bei area/floor OHNE name und nur für Sensor-Wert-Attribute — name-basierte
+# Einzel-Reads (inkl. climate-temperature ohne device_class) bleiben unangetastet.
+SENSOR_VALUE_ATTRS = frozenset({"temperature", "humidity", "illuminance",
+                                "battery", "power", "energy", "co2"})
+_ATTR_DEVICE_CLASS = {"co2": "carbon_dioxide"}   # sonst gilt attr == device_class
+
+
+def narrow_area_reads(args: dict, attr, reads: list) -> list:
+    """Area/Floor-value_query: reads auf die device_class des Metrik-Attributs filtern. No-op für
+    name-basierte Reads oder Nicht-Sensor-Attribute."""
+    if attr not in SENSOR_VALUE_ATTRS:
+        return reads
+    if args.get("name") or not (args.get("area") or args.get("floor")):
+        return reads
+    dc = _ATTR_DEVICE_CLASS.get(attr, attr)
+    return [r for r in reads if (r.get("attributes") or {}).get("device_class") == dc]
+
+
 # ── Wert-Normalisierung set_state (kanonisch, fixt B3/B5-pct/color_temp + invalid_value) ──
 def set_value_or_error(attr, val) -> tuple:
     """(canon_value, unit, err) für set_state. canon = Result-Wert (auch HA-Service-Argument-Basis);

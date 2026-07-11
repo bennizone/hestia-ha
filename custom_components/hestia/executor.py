@@ -283,6 +283,7 @@ async def _get_state(hass, args, exposure) -> dict:
         read["name"] = exposure[eid]["llm_name"]
         reads.append(read)
 
+    reads = R.narrow_area_reads(args, attr, reads)   # area-value: Raum → Metrik-Sensor(en)
     res = R.shape_get_state(attr, aggregate, reads)
     if res.get("error") == "no_data":   # query erden (Serve-Parität)
         res["query"] = args.get("name") or ""
