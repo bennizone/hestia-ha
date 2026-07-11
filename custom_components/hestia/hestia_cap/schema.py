@@ -66,7 +66,7 @@ ADJUSTABLE_ATTRS = ("brightness", "volume", "temperature", "position", "fan_spee
 # GET_ATTRS = Kern-Enum (breit, aber nicht Riesen-Enum). Feinere Discovery via `help`-Verb (Phase 3).
 GET_ATTRS = ("state", "brightness", "temperature", "humidity", "illuminance",
              "battery", "power", "energy", "co2", "position", "volume",
-             "fan_speed", "hvac_mode", "lock", "open", "datetime", "weather")
+             "fan_speed", "hvac_mode", "lock", "open", "datetime", "weather", "sun")
 COLOR_WORDS = ("warm_white", "cold_white", "white", "red", "green", "blue",
                "yellow", "orange", "purple", "pink")
 COLOR_TEMP_WORDS = ("warm", "cool")  # colortemp-Wortwerte (neben Kelvin-Zahl) — Single-Source fürs GBNF-value-Tightening

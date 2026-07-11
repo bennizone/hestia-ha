@@ -487,6 +487,30 @@ def shape_weather(name: str, struct: dict) -> dict:
                          "value": build_weather_block(struct)}])
 
 
+# ── Sonnenstand (v23.2) — flacher Read (datetime-Geschwister, kein cap-v2) ────
+# Basic: heutiger Auf-/Untergang + is_dark (vorgebacken). Serve liest sun.sun (state=
+# above/below_horizon + next_rising/next_setting), Train berechnet die Zeiten astronomisch
+# (sun_times.py) — beide füllen dasselbe flache reading (train==serve auf der FORM, Werte
+# dürfen divergieren wie bei Weather). is_dark ist die deterministische Vorkau-Antwort auf
+# „ist es dunkel?" (Modell rechnet nicht).
+def _min_hhmm(s):
+    """„HH:MM"(:SS) → Minuten-nach-Mitternacht, oder None."""
+    try:
+        h, m = str(s).split(":")[:2]
+        return int(h) * 60 + int(m)
+    except (ValueError, AttributeError):
+        return None
+
+
+def shape_sun(sunrise, sunset, is_dark=None) -> dict:
+    """Flaches Sonnenstand-reading {attribute:"sun", sunrise, sunset[, is_dark]}. sunrise/sunset =
+    lokale „HH:MM". is_dark (bool) nur wenn bekannt (Serve: sun.sun-state; Train: now vs Zeiten)."""
+    r = {"attribute": "sun", "sunrise": sunrise, "sunset": sunset}
+    if is_dark is not None:
+        r["is_dark"] = bool(is_dark)
+    return ok(reading=r)
+
+
 def shape_get_state(attr, aggregate, reads: list) -> dict:
     """reads = list[{"name":str, "state":str, "attributes":{...}}] (schon aufgelöst+gelesen).
     Baut readings / aggregate (count/any/all/avg/min/max) nach RESULT_SCHEMA §2b."""

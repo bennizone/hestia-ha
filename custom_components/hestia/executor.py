@@ -268,6 +268,9 @@ async def _get_state(hass, args, exposure) -> dict:
     if attr == "weather":
         return await _get_weather(hass, args, exposure)
 
+    if attr == "sun":
+        return _get_sun(hass)
+
     eids, err = R.resolve(args, exposure)
     if err:
         return err
@@ -284,6 +287,26 @@ async def _get_state(hass, args, exposure) -> dict:
     if res.get("error") == "no_data":   # query erden (Serve-Parität)
         res["query"] = args.get("name") or ""
     return res
+
+
+# ── Sonnenstand (v23.2): flacher Read aus sun.sun → geteiltes shape_sun ────────
+def _get_sun(hass) -> dict:
+    """attribute="sun" → sun.sun lesen. state = above/below_horizon (autoritatives is_dark);
+    next_rising/next_setting (ISO-UTC) → lokale HH:MM. Wie datetime: keine Entität-Auflösung nötig."""
+    from homeassistant.util import dt as dt_util
+    st = hass.states.get("sun.sun")
+    if st is None:
+        return R.err_unavailable("sun")
+
+    def _local_hhmm(iso):
+        dt = dt_util.parse_datetime(iso) if iso else None
+        return dt_util.as_local(dt).strftime("%H:%M") if dt else None
+
+    a = st.attributes
+    sunrise = _local_hhmm(a.get("next_rising"))
+    sunset = _local_hhmm(a.get("next_setting"))
+    is_dark = (st.state == "below_horizon") if st.state in ("above_horizon", "below_horizon") else None
+    return R.shape_sun(sunrise, sunset, is_dark)
 
 
 # ── Weather (v23.2): Read-Verb → live get_forecasts → geteilter Block-Builder ──
