@@ -53,7 +53,7 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
         return await _get_state(hass, args, exposure)
 
     if verb in _DEFERRED_VERBS:
-        return await _deferred(hass, call, exposure, context, device_id)
+        return R.with_say(await _deferred(hass, call, exposure, context, device_id), verb, args)
 
     # ab hier: mutierende / Aktions-Verben → Ziel auflösen (geteilter Resolver)
     eids, err = R.resolve(args, exposure)
@@ -79,13 +79,13 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
     names = R.names_of(exposure, eids)
     try:
         if verb in ("turn_on", "turn_off"):
-            return await _turn(hass, verb, eids, names, exposure, context)
+            return R.with_say(await _turn(hass, verb, eids, names, exposure, context), verb, args)
         if verb == "stop":
-            return await _stop(hass, eids, names, exposure, context)
+            return R.with_say(await _stop(hass, eids, names, exposure, context), verb, args)
         if verb == "set_state":
-            return await _set_state(hass, eids, names, args, exposure, context)
+            return R.with_say(await _set_state(hass, eids, names, args, exposure, context), verb, args)
         if verb == "adjust":
-            return await _adjust(hass, eids, names, args, exposure, context)
+            return R.with_say(await _adjust(hass, eids, names, args, exposure, context), verb, args)
     except Exception as e:  # noqa: BLE001 — HA-Service-Fehler → ehrliches Result, kein Crash
         _LOGGER.warning("Hestia executor %s failed: %s", verb, e)
         return R.err_timeout(args.get("name") or args.get("domain") or "")
@@ -489,15 +489,23 @@ async def execute_calls(hass: HomeAssistant, parsed, exposure: dict,
         return json.dumps(res, ensure_ascii=False, separators=(",", ":"))
 
     # Multi-Call: aggregieren (Aktions-Verben). Reads im Multi-Turn sind untypisch → best effort.
-    targets, failed, ok = [], [], True
+    # `say` je Erfolgs-Call einsammeln + zu EINER Phrase verketten (spiegelt R/action_result, train==serve).
+    targets, failed, says, ok = [], [], [], True
     for c in calls:
         r = await _exec_one(hass, c, exposure, context, deny, device_id)
         if r.get("ok"):
             targets += r.get("targets", [])
+            if r.get("say"):
+                says.append(r["say"])
         else:
             ok = False
             targets += r.get("targets", [])
             q = r.get("query") or (r.get("candidates") or ["?"])[0]
             failed.append({"name": q, "error": r.get("error", "failed")})
-    res = {"ok": True, "targets": targets} if ok else {"ok": False, "targets": targets, "failed": failed}
+    if ok:
+        res = {"ok": True, "targets": targets}
+        if says:
+            res["say"] = "; ".join(dict.fromkeys(says))
+    else:
+        res = {"ok": False, "targets": targets, "failed": failed}
     return json.dumps(res, ensure_ascii=False, separators=(",", ":"))

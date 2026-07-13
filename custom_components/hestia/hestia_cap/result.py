@@ -578,3 +578,110 @@ def exposure_from_house(house) -> dict:
             exp[eid] = {"llm_name": e.name, "aliases": list(e.aliases),
                         "domain": e.domain, "area": area.name, "floor": area.floor}
     return exp
+
+
+# ── v23.4 `say`-Feld: natürlichsprachige Executor-Wahrheit im Result (train==serve) ──
+# Der Executor kennt als Einziger die AUSGEFÜHRTE Wahrheit (Ziel+Aktion+Wert) und legt sie als
+# fertige Phrase (`say`) ins Erfolgs-Result. Das Modell formuliert `say` um statt Entity/Aktion
+# selbst zu GENERIEREN → fixt den Say-vs-Do-Gap. KANONISCH: Generator (train) UND Serve-Executor
+# rufen beide `with_say` → keine Divergenz mehr (Reconcile 2026-07-13, war v23.4-Deployment-Gap).
+_COLOR_DE = {
+    "warm_white": "warmweiß", "cold_white": "kaltweiß", "white": "weiß", "red": "rot",
+    "green": "grün", "blue": "blau", "yellow": "gelb", "orange": "orange",
+    "purple": "lila", "pink": "pink", "cyan": "türkis", "violet": "lila", "magenta": "magenta",
+}
+_TURN_SAY = {"turn_on": "eingeschaltet", "turn_off": "ausgeschaltet", "stop": "gestoppt"}
+_SET_PCT_VERB = {"brightness": "gedimmt", "position": "gefahren"}   # sonst "gestellt"
+_UNIT_WORD = {"°C": "Grad", "K": "Kelvin", "%": "Prozent"}
+_MEDIA_SAY = {"pause": "pausiert", "play": "gestartet", "stop": "gestoppt", "next": "übersprungen",
+              "previous": "zurückgesetzt", "volume_up": "lauter gestellt", "volume_down": "leiser gestellt",
+              "mute": "stummgeschaltet", "unmute": "wieder laut gestellt"}
+_VACUUM_SAY = {"start": "losgeschickt", "stop": "gestoppt", "pause": "pausiert",
+               "return": "zurück zur Basis geschickt", "return_to_base": "zurück zur Basis geschickt",
+               "locate": "geortet", "clean_area": "losgeschickt", "clean": "losgeschickt",
+               "clean_room": "losgeschickt", "clean_spot": "losgeschickt"}
+
+
+def _fmt_num(v) -> str:
+    return str(int(v)) if isinstance(v, float) and v.is_integer() else str(v)
+
+
+def _color_de(c) -> str:
+    return _COLOR_DE.get(str(c).strip().lower(), str(c))
+
+
+def _say_entity(targets: list, args: dict):
+    """Ziel-Phrase aus den aufgelösten Zielen (dedupt, Reihenfolge-stabil)."""
+    uniq = list(dict.fromkeys(targets or []))
+    if not uniq:
+        return None
+    return uniq[0] if len(uniq) == 1 else " und ".join(uniq)
+
+
+def say_for_call(verb: str, args: dict, r: dict):
+    """Deterministische Wahrheits-Phrase aus (Verb, Args, Result-Ziele/Wert). None → kein `say`
+    (Fehler-Result, Read, oder Fälle ohne eindeutige Ausführungs-Wahrheit → Gold trägt sie)."""
+    if not r.get("ok"):
+        return None
+    ent = _say_entity(r.get("targets") or [], args)
+    if verb in _TURN_SAY:
+        return f"{ent} {_TURN_SAY[verb]}" if ent else None
+    if verb == "set_state":
+        if not ent:
+            return None
+        attr, val, unit = args.get("attribute"), r.get("value"), r.get("unit")
+        if attr == "color":
+            return f"{ent} auf {_color_de(val)} gestellt"
+        if attr == "lock":
+            return (f"{ent} abgeschlossen" if val == "locked" else
+                    f"{ent} aufgeschlossen" if val == "unlocked" else f"{ent} auf {val} gestellt")
+        if attr == "open":
+            return f"{ent} geöffnet" if val else f"{ent} geschlossen"
+        if unit == "%":
+            return f"{ent} auf {_fmt_num(val)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}"
+        if unit in ("°C", "K"):
+            return f"{ent} auf {_fmt_num(val)} {_UNIT_WORD[unit]} gestellt"
+        return f"{ent} auf {val} gestellt" if val is not None else None
+    if verb == "adjust":
+        val, unit = r.get("value"), r.get("unit")
+        if not ent or r.get("at_limit"):
+            return None                       # Anschlag/Gruppe → value-freie Gold-Richtungsantwort
+        if unit and isinstance(val, (int, float)) and not isinstance(val, bool):
+            return f"{ent} auf {_fmt_num(val)} {_UNIT_WORD.get(unit, unit)} gestellt"
+        return None
+    if verb == "manage_list":
+        item = (args.get("item") or "").strip()
+        if not item:
+            return None
+        lst = (r.get("targets") or [args.get("name", "")])[0]
+        return (f"{item} zu {lst} hinzugefügt" if args.get("action", "add") == "add"
+                else f"{item} von {lst} entfernt")
+    if verb == "control_media":
+        act = args.get("action")
+        content = (args.get("content") or "").strip()
+        if act in ("play_content", "play_media", "play") and content:
+            return f"{content} auf {ent} gestartet" if ent else f"{content} gestartet"
+        w = _MEDIA_SAY.get(act)
+        return f"{ent} {w}" if ent and w else None
+    if verb == "control_vacuum":
+        w = _VACUUM_SAY.get(args.get("action"))
+        return f"{ent} {w}" if ent and w else None
+    if verb == "run_routine":
+        return f"{ent} ausgeführt" if ent else None
+    if verb == "set_timer":
+        if args.get("action", "set") != "set":
+            return "Timer abgebrochen"
+        dur = args.get("duration")
+        return f"Timer über {dur} gestellt" if dur else "Timer gestellt"
+    if verb == "announce":
+        return "Durchsage abgespielt"
+    return None
+
+
+def with_say(r: dict, verb: str, args: dict) -> dict:
+    """Hängt `say` an ein Erfolgs-Result (kopiert, um geteilte Shaper-Dicts nicht zu mutieren)."""
+    s = say_for_call(verb, args, r)
+    if s:
+        r = dict(r)
+        r["say"] = s
+    return r
