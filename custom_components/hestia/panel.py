@@ -13,6 +13,7 @@ from pathlib import Path
 from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
+from homeassistant.loader import async_get_integration
 
 from .const import DOMAIN
 
@@ -21,8 +22,9 @@ _LOGGER = logging.getLogger(__name__)
 PANEL_URL_PATH = "hestia"                       # /hestia in der URL + Sidebar-Slug
 PANEL_ELEMENT = "hestia-panel"                  # Custom-Element-Tag im Bundle
 _STATIC_PATH = "/hestia_static"                 # Static-Mount für das Bundle
-# Cache-Bust je Bundle-Änderung — HA cached Panel-Module aggressiv. Beim Editieren hochzählen.
-PANEL_JS_VERSION = "8"
+# Cache-Bust: die manifest-Version (dynamisch, s. async_register_panel) — HA/Browser cachen Panel-Module
+# aggressiv. Früher statische Konstante → Bundle-Änderungen erreichten den Browser NICHT (Bug 2026-07-13).
+PANEL_JS_VERSION = "8"   # Fallback, falls die Integration-Version mal nicht lesbar ist
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:
@@ -36,7 +38,11 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         [StaticPathConfig(_STATIC_PATH, str(js_file.parent), cache_headers=False)]
     )
 
-    module_url = f"{_STATIC_PATH}/hestia-panel.js?hv={PANEL_JS_VERSION}"
+    try:                                        # manifest-Version als Cache-Buster → bustet je Release
+        hv = str((await async_get_integration(hass, DOMAIN)).version or PANEL_JS_VERSION)
+    except Exception:  # noqa: BLE001
+        hv = PANEL_JS_VERSION
+    module_url = f"{_STATIC_PATH}/hestia-panel.js?hv={hv}"
     # Falls ein Alt-Panel hängt (Reload ohne sauberes Unload): erst weg, dann neu.
     frontend.async_remove_panel(hass, PANEL_URL_PATH, warn_if_unknown=False)
     frontend.async_register_built_in_panel(
