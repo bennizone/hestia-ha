@@ -12,6 +12,8 @@ auf (Helfer-Anlegen und Exposure bleiben entkoppelt/komponierbar).
 """
 from __future__ import annotations
 
+import asyncio
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
@@ -80,8 +82,15 @@ async def async_create(hass: HomeAssistant, kind: str, name: str, entities: list
     ids = await owned_ids(hass)                  # als Hestia-eigenen Helfer markieren (Ownership)
     ids.add(entry.entry_id)
     await _own_write(hass, ids)
-    await hass.async_block_till_done()          # Setup abwarten → Entität existiert in der Registry
-    return {"entry_id": entry.entry_id, "entity_id": entity_of_entry(hass, entry.entry_id),
+    # Auf die vom Config-Flow erzeugte Entität warten — BOUNDED-Poll statt async_block_till_done():
+    # Letzteres kann im WS-Handler-Kontext hängen (Panel-„Lege an…"-Freeze 2026-07-13). Max ~2,5s.
+    entity_id = None
+    for _ in range(50):
+        entity_id = entity_of_entry(hass, entry.entry_id)
+        if entity_id:
+            break
+        await asyncio.sleep(0.05)
+    return {"entry_id": entry.entry_id, "entity_id": entity_id,
             "name": entry.title, "kind": kind}
 
 

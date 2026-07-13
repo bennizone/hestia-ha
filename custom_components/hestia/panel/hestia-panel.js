@@ -1162,8 +1162,26 @@ class HestiaPanel extends HTMLElement {
 
   // Quell-Kandidaten je Sorte aus hass.states (numeric: sensor/number/input_number; binary: binary_sensor).
   _hcSources() {
-    const doms = this._hcDraft.kind === "numeric" ? ["sensor", "number", "input_number"] : ["binary_sensor"];
+    const d = this._hcDraft;
+    const numeric = d.kind === "numeric";
+    const doms = numeric ? ["sensor", "number", "input_number"] : ["binary_sensor"];
     const q = this._hcSearch.trim().toLowerCase();
+    // Area einer Entität (entity- oder device-Area) — Benni: „ich weiß nicht wo Temperatur 01 ist".
+    const areaName = (eid) => {
+      const ent = (this._hass.entities || {})[eid];
+      let aid = ent && ent.area_id;
+      if (!aid && ent && ent.device_id) { const dev = (this._hass.devices || {})[ent.device_id]; aid = dev && dev.area_id; }
+      const a = aid && (this._hass.areas || {})[aid];
+      return a ? a.name : "";
+    };
+    // Metrik-Lock: sobald die erste Quelle gewählt ist, nur noch gleiche Unit (numerisch) bzw.
+    // gleiche device_class (binär) zeigen — Mischen macht keinen Sinn (min_max braucht gleiche Unit).
+    let lockKey = null;
+    if (d.entities.length) {
+      const f = this._hass.states[d.entities[0]];
+      lockKey = f ? (numeric ? ((f.attributes && f.attributes.unit_of_measurement) || "")
+                             : ((f.attributes && f.attributes.device_class) || "")) : null;
+    }
     const out = [];
     for (const eid in (this._hass.states || {})) {
       const dom = eid.split(".")[0];
@@ -1171,7 +1189,11 @@ class HestiaPanel extends HTMLElement {
       const s = this._hass.states[eid];
       const nm = (s.attributes && s.attributes.friendly_name) || eid;
       if (q && !nm.toLowerCase().includes(q) && !eid.toLowerCase().includes(q)) continue;
-      out.push({ eid, nm, unit: (s.attributes && s.attributes.unit_of_measurement) || "" });
+      const unit = (s.attributes && s.attributes.unit_of_measurement) || "";
+      const dc = (s.attributes && s.attributes.device_class) || "";
+      const sel = d.entities.includes(eid);
+      if (lockKey !== null && !sel && (numeric ? unit : dc) !== lockKey) continue;  // gewählte immer zeigen (abwählbar)
+      out.push({ eid, nm, unit, area: areaName(eid) });
     }
     out.sort((a, b) => a.nm.localeCompare(b.nm));
     return out;
@@ -1186,8 +1208,9 @@ class HestiaPanel extends HTMLElement {
     const src = this._hcSources();
     const checklist = src.length ? src.map((c) => {
       const on = d.entities.includes(c.eid);
+      const meta = `${c.area ? esc(c.area) + " · " : ""}${esc(c.eid)}${c.unit ? " · " + esc(c.unit) : ""}`;
       return `<label class="chk${on ? " on" : ""}"><input type="checkbox" data-ent="${esc(c.eid)}"${on ? " checked" : ""}>
-        <span class="chk-nm">${esc(c.nm)}</span><span class="chk-eid">${esc(c.eid)}</span></label>`;
+        <span class="chk-nm">${esc(c.nm)}</span><span class="chk-eid">${meta}</span></label>`;
     }).join("") : `<div class="empty-state" style="padding:24px">Keine passenden ${isNum ? "Sensoren/Regler" : "Binärsensoren"} gefunden.</div>`;
 
     const areaOpts = `<option value="">— keine Area —</option>` +
@@ -1327,6 +1350,7 @@ class HestiaPanel extends HTMLElement {
   _openSentenceCreate() {
     this._scDraft = { phrases: [], target_entity: "", mode: "on", response: "" };
     this._scSearch = "";
+    this._scPhrasePending = "";   // getippter, noch nicht per Enter bestätigter Satz (überlebt Re-Render)
     this._root.querySelector("#scrimSentence").classList.add("on");
     this._root.querySelector("#sentenceModal").classList.add("on");
     this._renderSentenceModal();
@@ -1372,13 +1396,14 @@ class HestiaPanel extends HTMLElement {
       return `<label class="chk${on ? " on" : ""}"><input type="radio" name="sctarget" data-tgt="${esc(c.eid)}"${on ? " checked" : ""}>
         <span class="chk-nm">${esc(c.nm)}</span><span class="chk-eid">${esc(c.eid)}</span></label>`;
     }).join("") : `<div class="empty-state" style="padding:24px">Keine passende Ziel-Entität gefunden.</div>`;
-    const canSave = d.phrases.length && d.target_entity;
+    const pend0 = (this._scPhrasePending || "").trim();
+    const canSave = (d.phrases.length || pend0) && d.target_entity;
     modal.innerHTML = `
       <div class="modal-head"><h2>Satz anlegen</h2>
         <button class="btn" id="scClose">${svg(xIcon, 15)}Schließen</button></div>
       <div class="hc-body">
         <div class="field"><label>Sätze <span class="hint">— Enter fügt hinzu; mehrere Formulierungen für dieselbe Aktion</span></label>
-          <div class="chipwrap" id="scChips">${chips}<input id="scPhrase" placeholder="${d.phrases.length ? "" : "z. B. Kinoabend"}" autocomplete="off"></div>
+          <div class="chipwrap" id="scChips">${chips}<input id="scPhrase" value="${esc(this._scPhrasePending || "")}" placeholder="${d.phrases.length ? "" : "z. B. Kinoabend"}" autocomplete="off"></div>
         </div>
         <div class="field"><label>Ziel-Entität <span class="hint">— was gefeuert wird (Szene · Skript · Schalter · Licht …)</span></label>
           <div class="search hc-search">${svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>', 16)}
@@ -1396,12 +1421,15 @@ class HestiaPanel extends HTMLElement {
         <button class="btn primary" id="scCreate"${canSave ? "" : " disabled"}>Anlegen</button>
       </div>`;
 
-    const refreshSave = () => { const c = modal.querySelector("#scCreate"); if (c) c.disabled = !(d.phrases.length && d.target_entity); };
+    const refreshSave = () => { const c = modal.querySelector("#scCreate"); const pend = (this._scPhrasePending || "").trim(); if (c) c.disabled = !((d.phrases.length || pend) && d.target_entity); };
     modal.querySelector("#scClose").addEventListener("click", () => this._closeSentenceCreate());
     const phraseInput = modal.querySelector("#scPhrase");
+    // getippten (noch nicht per Enter bestätigten) Satz merken → überlebt Re-Render (Klick auf Ziel/Modus/Suche)
+    phraseInput.addEventListener("input", (e) => { this._scPhrasePending = e.target.value; refreshSave(); });
     const addPhrase = () => {
-      const v = phraseInput.value.trim();
+      const v = ((this._scPhrasePending || phraseInput.value) || "").trim();
       if (v && !d.phrases.includes(v)) d.phrases.push(v);
+      this._scPhrasePending = "";
       this._renderSentenceModal();
       const n = this._root.querySelector("#scPhrase"); if (n) n.focus();
     };
@@ -1431,6 +1459,8 @@ class HestiaPanel extends HTMLElement {
 
   async _createSentence() {
     const d = this._scDraft;
+    const pend = (this._scPhrasePending || "").trim();   // getippten (nicht per Enter bestätigten) Satz mit-übernehmen
+    if (pend && !d.phrases.includes(pend)) { d.phrases.push(pend); this._scPhrasePending = ""; }
     if (!(d.phrases.length && d.target_entity)) return;
     const btn = this._root.querySelector("#scCreate");
     if (btn) { btn.disabled = true; btn.textContent = "Lege an …"; }
