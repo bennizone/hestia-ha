@@ -146,10 +146,10 @@ async def ws_set(hass: HomeAssistant, connection, msg) -> None:
 # ── Helfer (READ-Aggregation, native HA-Helfer via Config-Flow — helpers.py) ──
 @websocket_api.websocket_command({vol.Required("type"): "hestia/helper/list"})
 @websocket_api.require_admin
-@callback
-def ws_helper_list(hass: HomeAssistant, connection, msg) -> None:
-    """Von uns verwaltbare Helfer (min_max/group-Config-Entries)."""
-    connection.send_result(msg["id"], {"helpers": helpers.list_helpers(hass)})
+@websocket_api.async_response
+async def ws_helper_list(hass: HomeAssistant, connection, msg) -> None:
+    """NUR von Hestia angelegte Helfer (Ownership-Filter — fremde HA-Helfer bleiben unangetastet)."""
+    connection.send_result(msg["id"], {"helpers": await helpers.list_helpers(hass)})
 
 
 @websocket_api.websocket_command({
