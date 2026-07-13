@@ -299,6 +299,39 @@ button, input, textarea { font: inherit; color: inherit; }
 .cand .eid { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
 .cand .area-tag { font-size: 11px; color: var(--ink-3); margin-right: 8px; }
 .cand .add-btn { padding: 5px 11px; font-size: 12.5px; }
+.cand .val { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.cand .val.off { color: var(--ink-3); }
+
+/* Geräte-zentrischer Add-Dialog (v0.1.7): aufklappbare Geräte + Multi-Select + Bulk-Add */
+.dev-group { border-bottom: 1px solid var(--line); }
+.dev-head { display: grid; grid-template-columns: 15px 22px minmax(0,1fr) auto auto; align-items: center;
+  gap: 12px; padding: 11px 12px; cursor: pointer; border-radius: var(--r-sm); }
+.dev-head:hover { background: var(--surface-2); }
+.dev-head .chev { color: var(--ink-3); display: grid; place-items: center; transition: transform .18s ease; }
+.dev-group.open .dev-head .chev { transform: rotate(90deg); }
+.dev-head .dom { color: var(--ink-3); display: grid; place-items: center; }
+.dev-head .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dev-head .sub { font-size: 11px; color: var(--ink-3); }
+.dev-head .area-tag { font-size: 11px; color: var(--ink-3); }
+.badge { font-size: 11px; font-weight: 600; color: var(--ink-2); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px 9px; min-width: 42px; text-align: center; }
+.dev-ents { display: none; padding: 2px 0 6px; }
+.dev-group.open .dev-ents { display: block; }
+.ent-row { display: grid; grid-template-columns: 17px 20px minmax(0,1fr) auto; align-items: center;
+  gap: 12px; padding: 8px 12px 8px 27px; cursor: pointer; }
+.ent-row:hover { background: var(--surface-2); }
+.ent-row .chk { width: 17px; height: 17px; accent-color: var(--accent); cursor: pointer; margin: 0; }
+.ent-row .dom { color: var(--ink-3); display: grid; place-items: center; }
+.ent-row .nm { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ent-row .eid { font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ent-row .val { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ent-row .val.off { color: var(--ink-3); }
+.dev-foot { padding: 6px 12px 8px 27px; }
+.dev-foot .bulk-btn { padding: 6px 13px; font-size: 12.5px; }
+.dev-foot .bulk-btn:disabled { opacity: .45; cursor: default; }
+.list-sep { padding: 15px 14px 6px; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--ink-3); }
 
 /* ── Helfer-View ── */
 .content.single { grid-template-columns: 1fr; }
@@ -391,6 +424,8 @@ class HestiaPanel extends HTMLElement {
     this._addOpen = false;
     this._candidates = null;
     this._candSearch = "";
+    this._candChecked = null;    // Set<entity_id> — im Add-Dialog angehakt (geräte-Bulk)
+    this._candOpenDev = null;    // Set<device_id> — aufgeklappte Geräte-Gruppen
     this._loading = true;
     this._error = null;
     this._view = "exposure";    // exposure | helpers | settings | sentences
@@ -907,6 +942,7 @@ class HestiaPanel extends HTMLElement {
   // ── Add-Dialog ──
   async _openAdd() {
     this._addOpen = true; this._candSearch = "";
+    this._candChecked = new Set(); this._candOpenDev = new Set();
     this._root.querySelector("#scrimAdd").classList.add("on");
     const modal = this._root.querySelector("#addModal");
     modal.classList.add("on");
@@ -922,27 +958,84 @@ class HestiaPanel extends HTMLElement {
     this._renderAdd();
   }
 
+  // Add-Dialog: nach GERÄT gruppieren (aufklappbar, Multi-Select, Bulk-Add pro Gerät);
+  // gerät-lose Entitäten (Helfer/Template) flach im Abschnitt „Ohne Gerät" (Einzel-Add wie bisher).
   _renderAdd() {
     const modal = this._root.querySelector("#addModal");
     const q = this._candSearch.trim().toLowerCase();
-    const list = (this._candidates || []).filter((c) =>
-      !q || c.ha_name.toLowerCase().includes(q) || c.entity_id.toLowerCase().includes(q));
-    list.sort((a, b) => (a.area || "￿").localeCompare(b.area || "￿") || a.ha_name.localeCompare(b.ha_name));
-    const items = list.length
-      ? list.map((c) => `<div class="cand" data-eid="${esc(c.entity_id)}">
-          <span class="dom">${domIcon(c.domain)}</span>
-          <div><div class="nm">${esc(c.ha_name)}</div><div class="eid">${esc(c.entity_id)}</div></div>
-          <div style="display:flex;align-items:center">
-            <span class="area-tag">${esc(c.area || "—")}</span>
-            <button class="btn primary add-btn" data-add="${esc(c.entity_id)}">${svg('<path d="M12 5v14M5 12h14"/>', 15)}Hinzufügen</button>
-          </div></div>`).join("")
-      : `<div class="empty-state" style="padding:34px">${q ? "Keine Treffer." : "Alle adressierbaren Entitäten sind schon hinzugefügt."}</div>`;
+    const match = (c) => !q || c.ha_name.toLowerCase().includes(q)
+      || c.entity_id.toLowerCase().includes(q)
+      || (c.device_name || "").toLowerCase().includes(q);
+    const list = (this._candidates || []).filter(match);
+
+    const devMap = new Map();            // device_id -> { id, name, area, items[] }
+    const orphans = [];
+    for (const c of list) {
+      if (!c.device_id) { orphans.push(c); continue; }
+      let g = devMap.get(c.device_id);
+      if (!g) { g = { id: c.device_id, name: c.device_name || c.ha_name, area: c.area || null, items: [] }; devMap.set(c.device_id, g); }
+      g.items.push(c);
+      if (!g.area && c.area) g.area = c.area;
+    }
+    const collate = (a, b, an, bn) => (a || "￿").localeCompare(b || "￿") || an.localeCompare(bn);
+    const devs = [...devMap.values()].sort((a, b) => collate(a.area, b.area, a.name, b.name));
+    devs.forEach((g) => g.items.sort((a, b) => a.ha_name.localeCompare(b.ha_name)));
+    orphans.sort((a, b) => collate(a.area, b.area, a.ha_name, b.ha_name));
+
+    const chk = this._candChecked;
+    const valOf = (c) => (c.available && c.state != null && c.state !== "") ? c.state : "—";
+    const entRow = (c) => `<label class="ent-row" data-eid="${esc(c.entity_id)}">
+        <input type="checkbox" class="chk" data-chk="${esc(c.entity_id)}"${chk.has(c.entity_id) ? " checked" : ""}>
+        <span class="dom">${domIcon(c.domain)}</span>
+        <div class="ent-txt"><div class="nm">${esc(c.ha_name)}</div><div class="eid">${esc(c.entity_id)}</div></div>
+        <span class="val${c.available ? "" : " off"}">${esc(valOf(c))}</span>
+      </label>`;
+    const devIcon = svg('<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 9h6v6H9z"/>', 17);
+    const devGroup = (g) => {
+      const open = this._candOpenDev.has(g.id);
+      const n = g.items.reduce((k, c) => k + (chk.has(c.entity_id) ? 1 : 0), 0);
+      return `<div class="dev-group${open ? " open" : ""}" data-dev="${esc(g.id)}">
+        <div class="dev-head" data-devtoggle="${esc(g.id)}">
+          <span class="chev">${svg('<path d="m9 6 6 6-6 6"/>', 15)}</span>
+          <span class="dom">${devIcon}</span>
+          <div class="ent-txt"><div class="nm">${esc(g.name)}</div><div class="sub">${g.items.length} Entität${g.items.length === 1 ? "" : "en"}</div></div>
+          <span class="area-tag">${esc(g.area || "—")}</span>
+          <span class="badge" data-badge="${esc(g.id)}">${n}/${g.items.length}</span>
+        </div>
+        <div class="dev-ents">
+          ${g.items.map(entRow).join("")}
+          <div class="dev-foot">
+            <button class="btn primary bulk-btn" data-bulk="${esc(g.id)}"${n ? "" : " disabled"}>${svg('<path d="M12 5v14M5 12h14"/>', 15)}Hinzufügen<span data-bcount> (${n})</span></button>
+          </div>
+        </div>
+      </div>`;
+    };
+    const orphanRow = (c) => `<div class="cand" data-eid="${esc(c.entity_id)}">
+        <span class="dom">${domIcon(c.domain)}</span>
+        <div><div class="nm">${esc(c.ha_name)}</div><div class="eid">${esc(c.entity_id)}</div></div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="val${c.available ? "" : " off"}">${esc(valOf(c))}</span>
+          <span class="area-tag">${esc(c.area || "—")}</span>
+          <button class="btn primary add-btn" data-add="${esc(c.entity_id)}">${svg('<path d="M12 5v14M5 12h14"/>', 15)}Hinzufügen</button>
+        </div></div>`;
+
+    let body;
+    if (!devs.length && !orphans.length) {
+      body = `<div class="empty-state" style="padding:34px">${q ? "Keine Treffer." : "Alle adressierbaren Entitäten sind schon hinzugefügt."}</div>`;
+    } else {
+      body = devs.map(devGroup).join("");
+      if (orphans.length) {
+        if (devs.length) body += `<div class="list-sep">Ohne Gerät</div>`;
+        body += orphans.map(orphanRow).join("");
+      }
+    }
     modal.innerHTML = `
       <div class="modal-head"><h2>Gerät hinzufügen</h2>
         <button class="btn" id="addClose">${svg('<path d="M18 6 6 18M6 6l12 12"/>', 15)}Schließen</button></div>
       <div class="search">${svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>', 16)}
-        <input placeholder="Suchen…" id="candSearch" value="${esc(this._candSearch)}"></div>
-      <div class="modal-list">${items}</div>`;
+        <input placeholder="Gerät oder Entität suchen…" id="candSearch" value="${esc(this._candSearch)}"></div>
+      <div class="modal-list">${body}</div>`;
+
     modal.querySelector("#addClose").addEventListener("click", () => this._closeAdd());
     const cs = modal.querySelector("#candSearch");
     cs.addEventListener("input", (e) => {
@@ -950,8 +1043,54 @@ class HestiaPanel extends HTMLElement {
       this._renderAdd();
       const ns = modal.querySelector("#candSearch"); if (ns) { ns.focus(); ns.setSelectionRange(pos, pos); }
     });
+    // Auf-/Zuklappen in-place (kein Re-Render → Scroll-Position bleibt, wichtig bei langen Listen)
+    modal.querySelectorAll("[data-devtoggle]").forEach((h) =>
+      h.addEventListener("click", () => {
+        const id = h.dataset.devtoggle;
+        const g = h.closest(".dev-group");
+        if (this._candOpenDev.has(id)) { this._candOpenDev.delete(id); g.classList.remove("open"); }
+        else { this._candOpenDev.add(id); g.classList.add("open"); }
+      }));
+    // Checkbox → Auswahl-Set + Badge/Button in-place aktualisieren
+    modal.querySelectorAll("[data-chk]").forEach((cb) =>
+      cb.addEventListener("change", () => {
+        const eid = cb.dataset.chk;
+        if (cb.checked) chk.add(eid); else chk.delete(eid);
+        this._refreshDevCounts(cb.closest(".dev-group"));
+      }));
+    modal.querySelectorAll("[data-bulk]").forEach((b) =>
+      b.addEventListener("click", () => this._addBulk(b.dataset.bulk)));
     modal.querySelectorAll("[data-add]").forEach((b) =>
       b.addEventListener("click", () => this._addEntity(b.dataset.add)));
+  }
+
+  // Badge „n/m" + Bulk-Button-Zähler/Disabled einer Geräte-Gruppe ohne Re-Render nachziehen.
+  _refreshDevCounts(groupEl) {
+    if (!groupEl) return;
+    const boxes = groupEl.querySelectorAll("[data-chk]");
+    let n = 0; boxes.forEach((b) => { if (b.checked) n++; });
+    const badge = groupEl.querySelector("[data-badge]"); if (badge) badge.textContent = `${n}/${boxes.length}`;
+    const bc = groupEl.querySelector("[data-bcount]"); if (bc) bc.textContent = ` (${n})`;
+    const btn = groupEl.querySelector("[data-bulk]"); if (btn) btn.disabled = n === 0;
+  }
+
+  // Alle angehakten Entitäten eines Geräts in EINEM WS-Call aktiv hinzufügen.
+  async _addBulk(deviceId) {
+    const eids = (this._candidates || [])
+      .filter((c) => c.device_id === deviceId && this._candChecked.has(c.entity_id))
+      .map((c) => c.entity_id);
+    if (!eids.length) return;
+    try {
+      const res = await this._hass.callWS({ type: "hestia/exposure/set_bulk", entity_ids: eids });
+      const added = new Set(eids);
+      (this._rows = this._rows || []).push(...(res.entities || []));
+      this._candidates = (this._candidates || []).filter((c) => !added.has(c.entity_id));
+      eids.forEach((e) => this._candChecked.delete(e));
+      this._renderMain();
+      this._renderAdd();
+    } catch (e) {
+      alert("Hinzufügen fehlgeschlagen: " + ((e && e.message) || e));
+    }
   }
 
   async _addEntity(eid) {

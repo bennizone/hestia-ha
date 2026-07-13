@@ -55,9 +55,15 @@ def _enrich(hass: HomeAssistant, entry, record: dict, regs) -> dict:
     st = hass.states.get(entry.entity_id)
     raw = st.state if st else None
     ha_name = _friendly_name(hass, entry)
+    # Geräte-Zuordnung fürs geräte-zentrische Add-Panel (v0.1.7). device_id/device_name None
+    # → gerät-lose Entität (Helfer/Template) → landet im „Ohne Gerät"-Abschnitt.
+    dev = dev_reg.async_get(entry.device_id) if entry.device_id else None
+    device_name = (dev.name_by_user or dev.name) if dev else None
     return {
         "entity_id": entry.entity_id,
         "domain": entry.entity_id.split(".")[0],
+        "device_id": entry.device_id,
+        "device_name": device_name,
         "area": area,
         "floor": floor,
         "ha_name": ha_name,                         # HAs friendly_name (Default/Referenz)
@@ -141,6 +147,39 @@ async def ws_set(hass: HomeAssistant, connection, msg) -> None:
     rec = await store.async_set(eid, patch)
     regs = (dr.async_get(hass), ar.async_get(hass), fr.async_get(hass))
     connection.send_result(msg["id"], _enrich(hass, entry, rec, regs))
+
+
+@websocket_api.websocket_command({
+    vol.Required("type"): "hestia/exposure/set_bulk",
+    vol.Required("entity_ids"): [str],
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_set_bulk(hass: HomeAssistant, connection, msg) -> None:
+    """Mehrere Entitäten in einem Rutsch aktiv hinzufügen (geräte-zentrischer Bulk-Add, v0.1.7).
+
+    Seedet je Entität die Registry-Aliase (wie ws_set beim Erst-Add), ein einziger Store-Save.
+    Unbekannte entity_ids werden still übersprungen; zurück kommen die angereicherten Records."""
+    store = get_store(hass)
+    ent_reg = er.async_get(hass)
+    existing = store.all_records()
+    patches: dict[str, dict] = {}
+    entries: dict[str, object] = {}
+    for eid in msg["entity_ids"]:
+        entry = ent_reg.async_get(eid)
+        if entry is None:
+            continue
+        patch = {"added": True}
+        if eid not in existing:                     # Erst-Add → Registry-Aliase als Startpunkt
+            reg_aliases = _aliases(entry)
+            if reg_aliases:
+                patch["aliases"] = reg_aliases
+        patches[eid] = patch
+        entries[eid] = entry
+    await store.async_set_many(patches)
+    regs = (dr.async_get(hass), ar.async_get(hass), fr.async_get(hass))
+    rows = [_enrich(hass, entries[eid], store.get(eid), regs) for eid in entries]
+    connection.send_result(msg["id"], {"entities": rows})
 
 
 # ── Helfer (READ-Aggregation, native HA-Helfer via Config-Flow — helpers.py) ──
@@ -323,6 +362,7 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_list)
     websocket_api.async_register_command(hass, ws_candidates)
     websocket_api.async_register_command(hass, ws_set)
+    websocket_api.async_register_command(hass, ws_set_bulk)
     websocket_api.async_register_command(hass, ws_helper_list)
     websocket_api.async_register_command(hass, ws_helper_create)
     websocket_api.async_register_command(hass, ws_helper_delete)

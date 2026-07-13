@@ -111,6 +111,22 @@ class ExposureStore:
         await self._async_save()
         return self._record(entity_id)
 
+    async def async_set_many(self, patches: dict[str, dict]) -> None:
+        """Mehrere Records in EINEM Save mergen (Geräte-Bulk-Add, v0.1.7).
+
+        `patches`: entity_id → Patch (nur PATCHABLE-Felder; `aliases` wird wie in async_set
+        normalisiert). Ein einziger Disk-Write statt N — sonst identische Merge-Semantik."""
+        assert self._data is not None, "async_load() zuerst aufrufen"
+        for eid, patch in patches.items():
+            clean = {k: v for k, v in patch.items() if k in PATCHABLE}
+            if "aliases" in clean:
+                clean["aliases"] = [a.strip() for a in clean["aliases"]
+                                    if isinstance(a, str) and a.strip()]
+            cur = dict(self._data.get(eid, {}))
+            cur.update(clean)
+            self._data[eid] = cur
+        await self._async_save()
+
     async def async_rename(self, old_entity_id: str, new_entity_id: str) -> bool:
         """Entity-Rename-Migration: kuratierten Record von old→new mitziehen (Key = entity_id).
 
