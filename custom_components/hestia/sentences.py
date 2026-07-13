@@ -133,6 +133,21 @@ class SentenceStore:
             return True
         return False
 
+    async def async_rename_target(self, old_entity_id: str, new_entity_id: str) -> int:
+        """Entity-Rename-Migration: `target_entity` aller Sätze old→new umschreiben.
+
+        Ohne das würde ein umbenanntes Ziel beim Feuern still ins Leere gehen (async_fire fällt
+        auf `_FIRE_FAIL_TEXT`). Rückgabe = Anzahl migrierter Sätze."""
+        assert self._data is not None, "async_load() zuerst aufrufen"
+        n = 0
+        for rec in self._data:
+            if rec.get("target_entity") == old_entity_id:
+                rec["target_entity"] = new_entity_id
+                n += 1
+        if n:
+            await self._async_save()
+        return n
+
     def match(self, text: str) -> tuple[dict, int] | None:
         """Bester Treffer über alle Sätze/Phrasen, oder None. Rückgabe (record, edits).
 

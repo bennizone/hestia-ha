@@ -14,10 +14,14 @@ Sysprompt-Membership = `added AND active` (s. house_builder.build_exposure).
 """
 from __future__ import annotations
 
+import logging
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 STORAGE_KEY = "hestia.exposure"
 STORAGE_VERSION = 1
@@ -106,6 +110,25 @@ class ExposureStore:
         self._data[entity_id] = cur
         await self._async_save()
         return self._record(entity_id)
+
+    async def async_rename(self, old_entity_id: str, new_entity_id: str) -> bool:
+        """Entity-Rename-Migration: kuratierten Record von old→new mitziehen (Key = entity_id).
+
+        Ohne diese Migration fiele eine umbenannte Entität still aus Modell+Panel (der Record
+        verwaist unter dem alten Key), und alle kuratierten Metadaten (llm_name/Aliase/Beschreibung/
+        limit_min-max/media_context) gingen effektiv verloren. Rückgabe True, wenn ein Record
+        verschoben wurde. Kollidiert `new` mit einem (stale) Record — er gehörte einer inzwischen
+        durch den Rename ersetzten Entität — gewinnt der umbenannte; der alte wird überschrieben."""
+        assert self._data is not None, "async_load() zuerst aufrufen"
+        if old_entity_id not in self._data:
+            return False
+        rec = self._data.pop(old_entity_id)
+        if new_entity_id in self._data:
+            _LOGGER.warning("Hestia exposure: Rename %s → %s überschreibt bestehenden Record",
+                            old_entity_id, new_entity_id)
+        self._data[new_entity_id] = rec
+        await self._async_save()
+        return True
 
     async def _async_save(self) -> None:
         await self._store.async_save({"entities": self._data})

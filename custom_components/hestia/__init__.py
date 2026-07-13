@@ -9,9 +9,13 @@ per Config-Entry — darum idempotent hinter hass.data-Flags.
 """
 from __future__ import annotations
 
+import logging
+from functools import partial
+
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, Event
 from homeassistant.const import Platform
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .panel import async_register_panel, async_remove_panel
@@ -19,7 +23,34 @@ from .sentences import SentenceStore
 from .store import ExposureStore
 from .websocket import async_register as async_register_ws
 
+_LOGGER = logging.getLogger(__name__)
+
 PLATFORMS = [Platform.CONVERSATION]
+
+
+async def _async_handle_entity_registry_updated(hass: HomeAssistant, event: Event) -> None:
+    """Bei entity_id-Rename die per-entity_id gekeyten Hestia-Daten mitziehen.
+
+    HA-Contract (2026.7): `action=="update"` mit `old_entity_id` im Event-Data feuert GENAU dann,
+    wenn sich die entity_id geändert hat (`entity_id` = neuer Wert). Ohne diese Migration verwaisen
+    der Exposure-Record (Key = entity_id) und die `target_entity` der Custom-Sätze still — die
+    Entität fällt aus Modell+Panel und alle kuratierten Metadaten gehen verloren. Owned-Helper +
+    Config-Settings sind bereits rename-fest (über config_entry_id gejoint)."""
+    data = event.data
+    if data.get("action") != "update" or "old_entity_id" not in data:
+        return
+    old = data["old_entity_id"]
+    new = data["entity_id"]
+    if not old or not new or old == new:
+        return
+    bucket = hass.data.get(DOMAIN, {})
+    store: ExposureStore | None = bucket.get("_store")
+    sent: SentenceStore | None = bucket.get("_sentences")
+    moved = await store.async_rename(old, new) if store is not None else False
+    n = await sent.async_rename_target(old, new) if sent is not None else 0
+    if moved or n:
+        _LOGGER.info("Hestia: Entity-Rename %s → %s migriert (exposure=%s, sentences=%d)",
+                     old, new, moved, n)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -38,6 +69,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await sent.async_load()
         bucket["_sentences"] = sent
 
+    # Entity-Rename-Listener (single instance) — hält Exposure-Store + Custom-Satz-Ziele
+    # rename-fest, indem er die per-entity_id gekeyten Daten bei Umbenennung mitzieht.
+    if "_er_unsub" not in bucket:
+        bucket["_er_unsub"] = hass.bus.async_listen(
+            er.EVENT_ENTITY_REGISTRY_UPDATED,
+            partial(_async_handle_entity_registry_updated, hass),
+        )
+
     async_register_ws(hass)
     await async_register_panel(hass)
 
@@ -53,6 +92,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Kein Config-Entry mehr → HA-weite Ressourcen abräumen (Panel weg, Store frei).
         if not any(k for k in bucket if not k.startswith("_")):
             async_remove_panel(hass)
+            unsub = bucket.pop("_er_unsub", None)
+            if unsub is not None:
+                unsub()
             bucket.pop("_store", None)
             bucket.pop("_sentences", None)
     return ok
