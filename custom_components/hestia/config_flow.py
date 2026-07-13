@@ -20,7 +20,7 @@ class HestiaConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(title="Hestia", data=user_input)
         schema = vol.Schema({
-            vol.Required(CONF_LLAMA_URL, default="http://10.83.1.111:8099"): str,
+            vol.Required(CONF_LLAMA_URL, default="http://homeassistant.local:8099"): str,
             vol.Optional(CONF_LOOP_DEPTH, default=DEFAULT_LOOP_DEPTH): int,
             # ⚠ Unsafe-Modus: erlaubt Schloss-/Alarm-Steuerung. Aus = Hestia blockt Schlösser (sicher).
             vol.Optional(CONF_UNSAFE_MODE, default=DEFAULT_UNSAFE_MODE): bool,
