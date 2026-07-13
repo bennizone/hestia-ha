@@ -205,12 +205,18 @@ async def _adjust(hass, eids, names, args, exposure, context) -> dict:
     amount = args.get("amount", "some")
     before, real_before, unit = _adj_before(hass, eids, attr, exposure)
 
+    # `after` wird ANALYTISCH aus dem kommandierten Schritt gebaut, NICHT nach dem Service-Call
+    # zurückgelesen: der HA-State-Write racet nach `blocking=True` (Stale-Read → after==before →
+    # falsches at_limit, obwohl real gedimmt wurde, Bug 2026-07-13). Der virtuelle Schritt ist
+    # deterministisch und clampt in [0,100] wie der Generator-Sim → train==serve auf value/at_limit.
+    after: dict = {}
     if attr == "brightness":
-        vstep = int(R.adjust_delta("brightness", amount, direction))   # virtueller Schritt
+        vstep = int(R.adjust_delta("brightness", amount, direction))   # virtueller Schritt (vorzeichenbehaftet)
         buckets: dict[int, list] = {}                                  # nach echtem (skaliertem) Schritt bündeln
         for e in eids:
             rstep = mapping.scale_step(vstep, exposure.get(e, {}).get("limit"))
             buckets.setdefault(rstep, []).append(e)
+            after[e] = max(0, min(100, before[e] + vstep))
         for rstep, es in buckets.items():
             await hass.services.async_call("light", "turn_on",
                                            {"entity_id": es, "brightness_step_pct": rstep},
@@ -219,6 +225,8 @@ async def _adjust(hass, eids, names, args, exposure, context) -> dict:
         svc = "volume_up" if direction == "up" else "volume_down"
         await hass.services.async_call("media_player", svc, {"entity_id": eids},
                                        blocking=True, context=context)
+        for e in eids:                     # HA volume_up/down ist grob → kein präziser Wert (nur Richtung)
+            after[e] = before.get(e)
     elif attr in ("temperature", "position", "fan_speed"):
         delta = R.adjust_delta(attr, amount, direction)
         for eid in eids:
@@ -226,16 +234,20 @@ async def _adjust(hass, eids, names, args, exposure, context) -> dict:
                 cur = real_before.get(eid)
                 if cur is None:
                     continue
+                tgt = float(cur) + delta
                 await hass.services.async_call("climate", "set_temperature",
-                                               {"entity_id": eid, "temperature": float(cur) + delta},
+                                               {"entity_id": eid, "temperature": tgt},
                                                blocking=True, context=context)
+                after[eid] = tgt
             elif attr == "fan_speed":       # Reconcile 2026-07-10: Generator trainiert adjust(fan_speed)
                 cur = real_before.get(eid)
                 if cur is None:
                     continue
+                tgt = max(0, min(100, int(cur + delta)))
                 await hass.services.async_call("fan", "set_percentage",
-                                               {"entity_id": eid, "percentage": max(0, min(100, int(cur + delta)))},
+                                               {"entity_id": eid, "percentage": tgt},
                                                blocking=True, context=context)
+                after[eid] = tgt
             else:                           # position — virtuell verstellen, auf echte Range mappen
                 vcur = before.get(eid)
                 if vcur is None:
@@ -245,14 +257,10 @@ async def _adjust(hass, eids, names, args, exposure, context) -> dict:
                 await hass.services.async_call("cover", "set_cover_position",
                                                {"entity_id": eid, "position": max(0, min(100, real_tar))},
                                                blocking=True, context=context)
+                after[eid] = vtar
     else:
         return R.err_not_controllable(attr)
 
-    after = {}
-    for e in eids:
-        v = R.adj_read(_state_read(hass, e), attr)[0]
-        lim = exposure.get(e, {}).get("limit") if attr in mapping.PCT_ATTRS else None
-        after[e] = mapping.to_virtual(v, lim) if lim else v
     return R.shape_adjust(names, before, after, eids, unit)
 
 
