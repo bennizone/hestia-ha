@@ -55,7 +55,16 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
     if verb in _DEFERRED_VERBS:
         return R.with_say(await _deferred(hass, call, exposure, context, device_id), verb, args)
 
-    # ab hier: mutierende / Aktions-Verben → Ziel auflösen (geteilter Resolver)
+    # v23.5: Single-Exit über with_say — auch Fehler-Results tragen jetzt die Failure-say (B1,
+    # train==serve). Bei Klärungs-Fehlern (dym/ambiguous/invalid_value) ist with_say ein No-Op.
+    return R.with_say(await _exec_action(hass, verb, args, exposure, context, deny), verb, args)
+
+
+async def _exec_action(hass: HomeAssistant, verb: str, args: dict, exposure: dict,
+                       context: Context, deny: list) -> dict:
+    """Mutierendes/Aktions-Verb: Ziel auflösen → dispatchen; liefert das ROHE Result/Fehler-dict
+    (die Failure-/Erfolgs-say hängt der Aufrufer via with_say an, train==serve)."""
+    # Ziel auflösen (geteilter Resolver)
     eids, err = R.resolve(args, exposure)
     if err:
         return err
@@ -79,13 +88,13 @@ async def _exec_one(hass: HomeAssistant, call, exposure: dict, context: Context,
     names = R.names_of(exposure, eids)
     try:
         if verb in ("turn_on", "turn_off"):
-            return R.with_say(await _turn(hass, verb, eids, names, exposure, context), verb, args)
+            return await _turn(hass, verb, eids, names, exposure, context)
         if verb == "stop":
-            return R.with_say(await _stop(hass, eids, names, exposure, context), verb, args)
+            return await _stop(hass, eids, names, exposure, context)
         if verb == "set_state":
-            return R.with_say(await _set_state(hass, eids, names, args, exposure, context), verb, args)
+            return await _set_state(hass, eids, names, args, exposure, context)
         if verb == "adjust":
-            return R.with_say(await _adjust(hass, eids, names, args, exposure, context), verb, args)
+            return await _adjust(hass, eids, names, args, exposure, context)
     except Exception as e:  # noqa: BLE001 — HA-Service-Fehler → ehrliches Result, kein Crash
         _LOGGER.warning("Hestia executor %s failed: %s", verb, e)
         return R.err_timeout(args.get("name") or args.get("domain") or "")
@@ -110,7 +119,12 @@ async def _turn(hass, verb, eids, names, exposure, context) -> dict:
 
 
 async def _stop(hass, eids, names, exposure, context) -> dict:
-    for eid in eids:
+    # B3: stop nur für cover/vacuum (Bewegung). fan/media/light haben keinen Stopp → not_controllable
+    # statt Fake-„gestoppt" (train==serve via geteiltem strip_to_stoppable).
+    keep, err = R.strip_to_stoppable(eids, exposure)
+    if err:
+        return err
+    for eid in keep:
         dom = exposure[eid]["domain"]
         if dom == "cover":
             await hass.services.async_call("cover", "stop_cover", {"entity_id": eid},
@@ -118,7 +132,7 @@ async def _stop(hass, eids, names, exposure, context) -> dict:
         elif dom == "vacuum":
             await hass.services.async_call("vacuum", "stop", {"entity_id": eid},
                                            blocking=True, context=context)
-    return R.shape_turn(names)
+    return R.shape_turn(R.names_of(exposure, keep))
 
 
 async def _dispatch_pct(hass, domain, service, param, eids, exposure, canon, context, scale=1) -> None:
