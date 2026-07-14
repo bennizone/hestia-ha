@@ -150,15 +150,10 @@ async def _dispatch_pct(hass, domain, service, param, eids, exposure, canon, con
                                        blocking=True, context=context)
 
 
-async def _set_state(hass, eids, names, args, exposure, context) -> dict:
-    attr, val = args["attribute"], args["value"]
-    canon, unit, err = R.set_value_or_error(attr, val)   # zentrale Wert-Semantik (B3/invalid_value)
-    if err:
-        return err
-    # Service-Dispatch: HA-spezifisch, aus (attr, canon) abgeleitet. Nur implementierte Attribute;
-    # neue Attribute (hvac_mode/preset/lock/alarm/oscillate/tilt/humidity/value/effect/option) sind
-    # serve-seitig DEFERRED (Executor-Branches = Phase 1b/3) → ehrlich not_controllable.
-    # pct-Attrs laufen über _dispatch_pct (Limit-Mapping virtuell→real); Result bleibt virtuell (canon).
+async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
+    """Ein set_state-Attribut mit EINEM effektiven Wert an HA dispatchen (Service-Map = statischer
+    WIE-Teil; das OB entscheidet capabilities_of vorher). pct-Attrs via _dispatch_pct (Limit-Mapping
+    virtuell→real). Nur ATTR_DOMAIN-Attribute erreichen diese Funktion (Guard im Aufrufer)."""
     if attr == "brightness":
         await _dispatch_pct(hass, "light", "turn_on", "brightness_pct", eids, exposure, canon, context)
     elif attr == "volume":
@@ -188,9 +183,25 @@ async def _set_state(hass, eids, names, args, exposure, context) -> dict:
                "armed_night": "alarm_arm_night", "disarmed": "alarm_disarm"}[canon]
         await hass.services.async_call("alarm_control_panel", svc,
                                        {"entity_id": eids}, blocking=True, context=context)
-    else:
-        return R.err_not_controllable(attr)
-    return R.shape_set_state(names, canon, unit)
+
+
+async def _set_state(hass, eids, names, args, exposure, context) -> dict:
+    """v23.5 Phase 4 — dynamisch: pro Ziel echte Live-Caps (capabilities_of aus hass.states) →
+    geteilter Gruppen-Planer (plan_group_set_state, per-Entität → partial, Benni 2026-07-14). Result
+    (done/done_clamped/not_capable/invalid_value/partial) train==serve. Dispatch NUR die geplant-
+    ausführbaren Ziele, gebündelt nach effektivem (ggf. geräte-echt geklemmtem) Wert."""
+    attr, val = args["attribute"], args["value"]
+    if attr not in R.ATTR_DOMAIN:            # deferred set_state-Attribute (hvac_mode/preset/effect/
+        return R.err_not_controllable(attr)  # option/oscillate/…) — HA-Dispatch = P3 → beide not_controllable
+    entries = [(e, exposure[e]["llm_name"],
+                R.capabilities_of(exposure[e]["domain"], _state_read(hass, e) or {})) for e in eids]
+    res, dispatch = R.plan_group_set_state(attr, val, entries)
+    buckets: dict = {}
+    for eid, canon, _unit in dispatch:       # effektiver Wert kann pro Entität abweichen (Klemmung)
+        buckets.setdefault(canon, []).append(eid)
+    for canon, bucket_eids in buckets.items():
+        await _dispatch_attr(hass, attr, canon, bucket_eids, exposure, context)
+    return res
 
 
 def _adj_before(hass, eids, attr, exposure) -> tuple:
@@ -522,12 +533,16 @@ async def execute_calls(hass: HomeAssistant, parsed, exposure: dict,
         else:
             ok = False
             targets += r.get("targets", [])
-            q = r.get("query") or (r.get("candidates") or ["?"])[0]
-            failed.append({"name": q, "error": r.get("error", "failed")})
+            if r.get("failed"):                     # Sub-Result war selbst partial (Gruppen-set_state) → failed übernehmen
+                failed += r["failed"]
+            else:
+                q = r.get("query") or (r.get("candidates") or ["?"])[0]
+                failed.append({"name": q, "error": r.get("error", "failed")})
     if ok:
         res = {"ok": True, "targets": targets}
         if says:
             res["say"] = "; ".join(dict.fromkeys(says))
     else:
         res = {"ok": False, "targets": targets, "failed": failed}
+        res["say"] = R.partial_say(res)       # v23.5 P4: truthful Aggregat-say (train==serve, s. action_result)
     return json.dumps(res, ensure_ascii=False, separators=(",", ":"))

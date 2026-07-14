@@ -19,6 +19,12 @@ class Entity:
     domain: str
     aliases: tuple = ()  # weitere Namen (Resolver-Grounding + ab r3 gerendert „auch: …")
     description: str = ""  # freitext-Zweck-Hinweis (ab r3 gerendert; vage/umschreibende Auflösung)
+    # v23.5 Phase 4 (Cap-Haus): geräte-echtes Capability-Profil (supported_color_modes/hvac_modes/
+    # min_temp/effect_list/preset_modes/options/…) + optionaler synth. `state`. Speist NICHT den
+    # Renderer (Prompt bleibt schlank), sondern NUR den Sim-State-Store (states_from_house) →
+    # capabilities_of → plan_set_state (train==serve). Leer ⇒ caps=None ⇒ konservativer Fallback.
+    attributes: dict = field(default_factory=dict)
+    state: str = ""
 
 
 @dataclass(frozen=True)
@@ -49,7 +55,8 @@ class House:
     def _mk_entity(e: dict) -> Entity:
         names = e.get("names") or ([e["name"]] if e.get("name") else [])
         return Entity(name=names[0], domain=e.get("domain", ""), aliases=tuple(names[1:]),
-                      description=(e.get("description") or "").strip())
+                      description=(e.get("description") or "").strip(),
+                      attributes=dict(e.get("attributes") or {}), state=str(e.get("state") or ""))
 
     @staticmethod
     def _mk_area(name: str, floor: str | None, ents: list) -> Area:

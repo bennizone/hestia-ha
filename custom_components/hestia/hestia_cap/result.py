@@ -144,6 +144,27 @@ def err_unsafe(query="") -> dict:
     return {"ok": False, "error": "unsafe", "query": query}
 
 
+# Hinweis-Felder eines Fehlers, die in einen partial-`failed`-Eintrag mitwandern (query → name ersetzt).
+_FAIL_HINT_KEYS = ("available", "allowed", "did_you_mean", "param", "given")
+
+
+def _failed_entry(name: str, err: dict) -> dict:
+    """Fehler-dict (aus plan_set_state) → partial-`failed`-Eintrag {name,error[,hints]}.
+    `query` fällt weg (der Ziel-Bezug ist jetzt `name`); die handlungsleitenden Hinweise bleiben."""
+    e = {"name": name, "error": err.get("error")}
+    for k in _FAIL_HINT_KEYS:
+        if k in err:
+            e[k] = err[k]
+    return e
+
+
+def shape_partial(targets: list, failed: list) -> dict:
+    """PARTIAL (RESULT_SCHEMA §2a): Multi-Target, manche geglückt/manche gescheitert.
+    ok=false (nicht voller Erfolg), aber die geglückten `targets` bleiben zitierbar + `failed`
+    trägt pro Ziel den handlungsleitenden Fehler. `say`/Antwort nennt beide Seiten (§4)."""
+    return {"ok": False, "targets": list(targets), "failed": list(failed)}
+
+
 def err_timeout(query="") -> dict:
     return {"ok": False, "error": "timeout", "query": query}
 
@@ -439,8 +460,12 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
 
 
 def _available_attrs(caps: Caps) -> list:
-    """settable-Attr-Keys in kanonischer Reihenfolge (für not_capable-`available`)."""
-    return sorted(caps.settable, key=lambda a: (_ATTR_ORDER.index(a) if a in _ATTR_ORDER else 99, a))[:_ALLOWED_TRUNC_N]
+    """not_capable-`available` = welche Attribute der Assistent DOCH setzen kann. Nur ASSISTANT-
+    setzbare (∩ ATTR_DOMAIN, Benni 2026-07-14): jede angebotene Alternative ist erfüllbar (rev2-
+    Kernwert). Geräte-fähige aber serve-DEFERRED Attrs (effect/tilt/hvac_mode/…) fallen raus, bis
+    P3 sie verdrahtet — dann wachsen sie über ATTR_DOMAIN automatisch rein. Kanonische Reihenfolge."""
+    avail = [a for a in caps.settable if a in ATTR_DOMAIN]
+    return sorted(avail, key=lambda a: (_ATTR_ORDER.index(a) if a in _ATTR_ORDER else 99, a))[:_ALLOWED_TRUNC_N]
 
 
 def _clamp(canon, spec: Spec):
@@ -528,6 +553,43 @@ def shape_set_state(names: list, canon, unit, clamped=False) -> dict:
     if clamped:                              # v23.5 P1b: done_clamped — echoter Wert = effektiv (geklemmt)
         out["clamped"] = True
     return out
+
+
+def plan_group_set_state(attr, value, entries: list) -> tuple:
+    """Gruppen-set_state über per-Entität-echte Caps → (result, dispatch). Geteilt train==serve.
+
+    `entries`: list[(eid, name, caps|None)] — pro Ziel die aus `capabilities_of` gezogenen Caps.
+    Politik (Benni 2026-07-14 „per-Entität → partial"): jede Entität wird EINZELN geplant
+    (`plan_set_state`), dann aggregiert:
+      · alle ok, EIN einheitlicher (Wert, clamped) → ein `shape_set_state`-Result (ggf. clamped).
+      · alle ok, aber Wert/Klemmung divergiert → nur `targets` (Wert wäre mehrdeutig, adjust-Präzedenz).
+      · manche ok / manche gescheitert → `partial` (geglückte targets + failed-Liste).
+      · alle gescheitert: Einzelziel → roher Fehler (query=name); mehrere → partial mit leeren targets.
+    `dispatch` = [(eid, canon, unit)] der geplant-ausführbaren Ziele (Serve dispatcht NUR diese;
+    der Generator ignoriert dispatch — er baut kein HA)."""
+    planned = [(eid, name, plan_set_state(attr, value, caps)) for eid, name, caps in entries]
+    ok_items = [(eid, name, r[0], r[1], r[2]) for eid, name, r in planned if r[3] is None]
+    failed = [(name, r[3]) for _, name, r in planned if r[3] is not None]
+    dispatch = [(eid, canon, unit) for eid, name, canon, unit, _ in ok_items]
+
+    if not failed:                                   # alle fähig + im gültigen Bereich
+        names = [n for _, n, _, _, _ in ok_items]
+        shapes = {(c, cl, u) for _, _, c, u, cl in ok_items}
+        if len(shapes) == 1:                         # einheitlicher effektiver Wert → zitierbar
+            canon, clamped, unit = next(iter(shapes))
+            return shape_set_state(names, canon, unit, clamped), dispatch
+        return ok(targets=names), dispatch           # divergent → Gruppe, Wert weglassen (mehrdeutig)
+
+    ok_names = [n for _, n, _, _, _ in ok_items]
+    failed_wire = [_failed_entry(n, err) for n, err in failed]
+    if not ok_items:                                 # Total-Fehler
+        if len(failed) == 1:
+            name, err = failed[0]                    # Einzelziel: roher Fehler, query→name (say-Subject)
+            if err.get("error") == "not_controllable":
+                return err_not_controllable(name, available=err.get("available")), dispatch
+            return err, dispatch                     # invalid_value trägt param/given/allowed (kein query nötig)
+        return shape_partial([], failed_wire), dispatch
+    return shape_partial(ok_names, failed_wire), dispatch
 
 
 def adjust_delta(attr, amount, direction):
@@ -799,6 +861,22 @@ def exposure_from_house(house) -> dict:
     return exp
 
 
+def states_from_house(house) -> dict:
+    """hestia_cap.House → {eid: {"state","attributes"}} — der Sim-State-Store des Action-Pfads
+    (Cap-Haus, Phase 4). eid-Vergabe BYTE-IDENTISCH zu exposure_from_house (gleiche Iteration) →
+    `states[eid]` und `exposure[eid]` bezeichnen dieselbe Entität. Serve baut das Äquivalent aus
+    der echten HA-Registry (`hass.states.get` je eid). Entitäten OHNE Cap-Profil (leeres attributes)
+    liefern `{}` ⇒ capabilities_of → konservativ (kein Gate). Beide Seiten speisen dieselbe reine
+    Funktion `capabilities_of` → Parität by-construction (wie read_attr)."""
+    st = {}
+    n = 0
+    for area in house.areas:
+        for e in area.entities:
+            st[f"e{n}"] = {"state": e.state, "attributes": dict(e.attributes or {})}
+            n += 1
+    return st
+
+
 # ── v23.4 `say`-Feld: natürlichsprachige Executor-Wahrheit im Result (train==serve) ──
 # Der Executor kennt als Einziger die AUSGEFÜHRTE Wahrheit (Ziel+Aktion+Wert) und legt sie als
 # fertige Phrase (`say`) ins Erfolgs-Result. Das Modell formuliert `say` um statt Entity/Aktion
@@ -837,6 +915,97 @@ def _say_entity(targets: list, args: dict):
     return uniq[0] if len(uniq) == 1 else " und ".join(uniq)
 
 
+# ── v23.5 Phase 4 — say-Render der dyn. Executor-Effekte (§6.3, geteilt train==serve) ──
+# Attribut → deutsches Nomen (für not_capable-`available` + not_capable-Verneinung). KANONISCH
+# hier (eine Stelle, §6.5-Zahl-/Wort-Lokalisierung), NICHT in 30 Templates.
+_ATTR_DE = {"color": "Farbe", "brightness": "Helligkeit", "color_temp": "Weißton",
+            "temperature": "Temperatur", "volume": "Lautstärke", "position": "Position",
+            "fan_speed": "Geschwindigkeit", "hvac_mode": "Modus", "preset": "Voreinstellung",
+            "effect": "Effekt", "option": "Einstellung", "tilt": "Neigung", "oscillate": "Schwenken",
+            "humidity": "Luftfeuchte", "value": "Wert", "source": "Quelle"}
+_ATTR_NEG_DE = {"color": "keine Farbe", "brightness": "keine Helligkeit", "color_temp": "keinen Weißton",
+                "temperature": "keine Temperatur", "volume": "keine Lautstärke",
+                "position": "keine Position", "fan_speed": "keine Geschwindigkeit"}
+
+
+def _join_de(items) -> str:
+    """[a,b,c] → „a, b und c" (deutsche Aufzählung, Reihenfolge-stabil)."""
+    xs = [x for x in items if x]
+    if not xs:
+        return ""
+    if len(xs) == 1:
+        return xs[0]
+    return ", ".join(xs[:-1]) + " und " + xs[-1]
+
+
+def _clamp_direction(requested, effective) -> str:
+    """Klemm-Richtung fürs done_clamped-say: „mehr/weniger geht nicht". requested (args.value) vs
+    effektiver (geklemmter) Wert. min/max-Wortmarken werden auf die Richtung abgebildet."""
+    try:
+        return "up" if float(requested) > float(effective) else "down"
+    except (TypeError, ValueError):
+        if requested == "min":
+            return "down"
+        return "up"                              # „max"/unbekannt → oberes Limit (häufigster Fall)
+
+
+def _clamp_suffix(phrase: str, args: dict, effective, r: dict) -> str:
+    """done_clamped: „…auf 100 Prozent — mehr geht nicht" (§6.3). Nur wenn clamped:true."""
+    if not r.get("clamped"):
+        return phrase
+    d = _clamp_direction(args.get("value"), effective)
+    return phrase + (" — mehr geht nicht" if d == "up" else " — weniger geht nicht")
+
+
+def _not_capable_say(args: dict, r: dict) -> str:
+    """§6.3 not_capable: „Die Deckenlampe kann keine Farbe — nur Helligkeit und Weißton." Subjekt =
+    `query` (der Ziel-Name, aus plan_group bei Einzelziel), Attribut aus args, available aus dem Result."""
+    name = r.get("query") or "Das Gerät"
+    attr = args.get("attribute")
+    neg = _ATTR_NEG_DE.get(attr, f"kein {_ATTR_DE.get(attr, attr)}")
+    avail = _join_de(_ATTR_DE.get(a, a) for a in (r.get("available") or []))
+    base = f"{name} kann {neg}"
+    return f"{base} — nur {avail}." if avail else f"{base}."
+
+
+def _fail_clause(f: dict) -> str:
+    """Kurz-Klausel für einen partial-`failed`-Eintrag (Ziel + Grund)."""
+    name = f.get("name") or "Ein Gerät"
+    err = f.get("error")
+    if err == "not_controllable":
+        av = _join_de(_ATTR_DE.get(a, a) for a in (f.get("available") or []))
+        return f"{name} kann das nicht" + (f" — nur {av}" if av else "")
+    if err == "unavailable":
+        return f"{name} war nicht erreichbar"
+    if err == "invalid_value":
+        given = f.get("given")
+        if f.get("param") == "color":            # DE-Lokalisierung wie Single-Call (cyan → türkis)
+            given = _color_de(given)
+        return f"{name}: {given} geht nicht"
+    return f"{name} hat nicht geklappt"
+
+
+def _partial_say(verb: str, args: dict, r: dict):
+    """§6.3 partial: geglückte Ziele + gescheiterte Gründe in EINER Phrase (Truthfulness §4: beide
+    Seiten nennen). Wert-frei für die geglückten (Gruppen-Wert mehrdeutig) — nur die Aktion."""
+    ok_names = list(dict.fromkeys(r.get("targets") or []))
+    parts = []
+    if ok_names:
+        ent = _join_de(ok_names)
+        verb_word = _TURN_SAY.get(verb)          # turn_on/off/stop → ein-/ausgeschaltet/gestoppt
+        parts.append(f"{ent} {verb_word}" if verb_word else f"{ent} eingestellt")
+    parts += [_fail_clause(f) for f in (r.get("failed") or [])]
+    parts = [p for p in parts if p]
+    return "; ".join(parts) if parts else None
+
+
+def partial_say(result: dict):
+    """say für ein AGGREGIERTES partial-Result (Multi-Call / verb-loses Aggregat) — targets (erledigt)
+    + failed (Gründe). Verb-frei (Multi-Call mischt Verben) → generische Erfolgs-Phrase. Geteilt,
+    damit Generator (action_result) und Serve (execute_calls) byte-identisch `say` ans Aggregat hängen."""
+    return _partial_say(None, {}, result)
+
+
 # ── B1 Failure-say (v23.5): truthful phrase für Sackgassen-Fehler von Aktions-Verben ──
 # Ohne say halluziniert das 350M Erfolg bei ok:false (der EINE echte Truthfulness-Fehler der Bench,
 # Cases succ#36: turn_off Erdgeschoss → {ok:false,no_targets} → Modell „das Licht ist aus"). Wir geben
@@ -870,7 +1039,11 @@ def fail_say_for_call(verb: str, r: dict):
 def say_for_call(verb: str, args: dict, r: dict):
     """Deterministische Wahrheits-Phrase aus (Verb, Args, Result-Ziele/Wert). None → kein `say`
     (Klärungs-/Read-Fehler oder Fälle ohne eindeutige Ausführungs-Wahrheit → Gold trägt sie)."""
+    if r.get("failed") is not None:              # v23.5 P4: partial (Gruppen-set_state, ok:false + failed)
+        return _partial_say(verb, args, r)
     if not r.get("ok"):
+        if verb == "set_state" and r.get("error") == "not_controllable" and r.get("available"):
+            return _not_capable_say(args, r)     # v23.5 P4: not_capable mit geräte-echtem available (§6.3)
         return fail_say_for_call(verb, r)
     ent = _say_entity(r.get("targets") or [], args)
     if verb in _TURN_SAY:
@@ -887,9 +1060,10 @@ def say_for_call(verb: str, args: dict, r: dict):
         if attr == "open":
             return f"{ent} geöffnet" if val else f"{ent} geschlossen"
         if unit == "%":
-            return f"{ent} auf {_fmt_num(val)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}"
+            return _clamp_suffix(f"{ent} auf {_fmt_num(val)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}",
+                                 args, val, r)
         if unit in ("°C", "K"):
-            return f"{ent} auf {_fmt_num(val)} {_UNIT_WORD[unit]} gestellt"
+            return _clamp_suffix(f"{ent} auf {_fmt_num(val)} {_UNIT_WORD[unit]} gestellt", args, val, r)
         return f"{ent} auf {val} gestellt" if val is not None else None
     if verb == "adjust":
         val, unit = r.get("value"), r.get("unit")
