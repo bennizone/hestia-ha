@@ -14,7 +14,8 @@ from .render import (RENDER_VERSION, INSTRUCTIONS, render_house,
                      render_system_content, build_messages)
 from .chat_template import render_prompt, render_live_context, BOS_TOKEN, STOP
 from . import result
-from .result import StateProvider, resolve, exposure_from_house
+from .result import (StateProvider, resolve, exposure_from_house,
+                     capabilities_of, plan_set_state, Caps, Spec)
 
 __all__ = ["CAP_VERSION", "VERBS", "TOOL_CALL_START", "TOOL_CALL_END",
            "all_tool_defs", "tool_def", "build_grammar",
@@ -22,4 +23,5 @@ __all__ = ["CAP_VERSION", "VERBS", "TOOL_CALL_START", "TOOL_CALL_END",
            "House", "Area", "Entity", "RENDER_VERSION", "INSTRUCTIONS",
            "render_house", "render_system_content", "build_messages",
            "render_prompt", "render_live_context", "BOS_TOKEN", "STOP",
-           "result", "StateProvider", "resolve", "exposure_from_house"]
+           "result", "StateProvider", "resolve", "exposure_from_house",
+           "capabilities_of", "plan_set_state", "Caps", "Spec"]

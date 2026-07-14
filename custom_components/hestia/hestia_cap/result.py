@@ -18,10 +18,12 @@ Fehler-Codes: RESULT_SCHEMA §3 (additiv-only Enum) — hier die einzige Bau-Que
 from __future__ import annotations
 
 import difflib
+from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Protocol, runtime_checkable
 
-from .schema import COLOR_SYNONYMS, COLOR_WORDS, SETTABLE_ATTRS
+from .schema import (ADJUSTABLE_ATTRS, ALARM_STATES, COLOR_SYNONYMS, COLOR_WORDS,
+                     HVAC_MODES, LOCK_STATES, ONOFF, SETTABLE_ATTRS)
 
 # ── Konstanten (aus executor.py gehoben — jetzt Single-Source) ────────────────
 # Attribut → zuständige Domain (set_state/adjust ohne explizites domain-Filter):
@@ -129,8 +131,13 @@ def err_unavailable(query="") -> dict:
     return {"ok": False, "error": "unavailable", "query": query}
 
 
-def err_not_controllable(query="") -> dict:
-    return {"ok": False, "error": "not_controllable", "query": query}
+def err_not_controllable(query="", available=None) -> dict:
+    """not_controllable. `available` (v23.5 P1b, additiv) = die Attribute, die die Entität DOCH
+    setzen kann — handlungsleitend für not_capable („kann keine Farbe — nur Helligkeit/Weißton")."""
+    d = {"ok": False, "error": "not_controllable", "query": query}
+    if available:
+        d["available"] = list(available)
+    return d
 
 
 def err_unsafe(query="") -> dict:
@@ -201,6 +208,20 @@ def strip_readonly_for_turn(eids: list, exposure: dict):
     return keep, None
 
 
+# stop = „Bewegung anhalten" (HassStopMoving) → nur Domains MIT Stopp-Semantik. fan/media/light haben
+# keinen Stopp (nur aus) → Fake-„gestoppt" wäre unwahr (B3). GETEILT train==serve (Generator + Executor).
+_STOP_DOMAINS = ("cover", "vacuum")
+
+
+def strip_to_stoppable(eids: list, exposure: dict):
+    """stop-Ziele auf cover/vacuum einengen. Kein stoppbares Ziel → not_controllable statt Fake-Erfolg.
+    (kept_eids, None) | (None, err_not_controllable)."""
+    keep = [e for e in eids if exposure[e]["domain"] in _STOP_DOMAINS]
+    if not keep:
+        return None, err_not_controllable("")
+    return keep, None
+
+
 def narrow_by_attr_domain(eids: list, attr, exposure: dict):
     """set_state/adjust ohne explizites domain → auf die vom Attribut implizierte Domain einengen.
     Liefert (eids, None) oder (None, no_targets-err)."""
@@ -264,6 +285,202 @@ def set_value_or_error(attr, val) -> tuple:
     return None, None, err_not_controllable(attr)
 
 
+# ══ v23.5 P1b: Capability-Introspektion (dynamischer Executor, DYNAMIC_EXECUTOR.md) ══
+# EINE geteilte Funktion normalisiert BEIDE Quellen (Live-HA-Attr ↔ synth. Cap-Haus) in
+# denselben Cap-Struct; ein geteilter Planer entscheidet daraus → train==serve auf dem Result-
+# JSON (wie read_attr). `capabilities_of` ist pure über (domain, {"state","attributes"}) — kennt
+# die QUELLE nicht, also ist Parität by-construction, solange beide Seiten dieselben Attr-Keys
+# tragen (Cap-Haus-Kontrakt, Phase 4). Determinismus-LOCKs: §6.5 (CLAMP_MARGIN, allowed-Sortierung
+# = Enum-Reihenfolge, Truncation N=6). Vorrang not_capable > invalid_value (§6.3).
+
+CLAMP_MARGIN_PCT = 5          # §6.5: done_clamped melden erst ab Übergrenze+5pp (bzw. 1 Range-Step)
+_ALLOWED_TRUNC_N = 6          # §6.5: allowed/available auf 6 kappen (WLED-180 → nicht dumpen)
+_ATTR_ORDER = tuple(SETTABLE_ATTRS)   # kanonische Attr-Reihenfolge für `available`-Sortierung
+
+# supported_features-Bits NUR wo KEIN Listen-Attribut existiert (§2 Bitmask-Regel):
+# cover position/tilt, media volume, fan oscillate. hvac_modes/preset_modes/effect_list/options/
+# source_list werden IMMER direkt aus der Liste gelesen (lokalisiert, robust).
+_FEAT_BITS = {
+    ("cover", "position"): 4,       # CoverEntityFeature.SET_POSITION
+    ("cover", "tilt"): 128,         # CoverEntityFeature.SET_TILT_POSITION
+    ("media_player", "volume"): 4,  # MediaPlayerEntityFeature.VOLUME_SET
+    ("fan", "oscillate"): 2,        # FanEntityFeature.OSCILLATE
+}
+_COLOR_CAP_MODES = frozenset({"hs", "rgb", "xy", "rgbw", "rgbww"})
+
+
+@dataclass
+class Spec:
+    """Wert-Domäne EINES settable-Attributs auf EINER Entität.
+      kind="range" : numerisch, [lo,hi] (step/unit) — Klemmung → done_clamped
+      kind="enum"  : geschlossene, GERÄTE-echte Wertliste (kanonisch sortiert) — invalid_value
+      kind="any"   : fähig, aber Introspektion blank → konservativ akzeptieren (kein invalid_value, §4-Q3)
+    """
+    kind: str
+    lo: float | int | None = None
+    hi: float | int | None = None
+    step: float | int | None = None
+    unit: str | None = None
+    values: tuple = ()
+
+
+@dataclass
+class Caps:
+    """Was eine konkrete Entität kann. `settable`: attr→Spec (fehlt ⇒ not_capable);
+    `adjustable`: relativ verstellbare Teilmenge (für plan_adjust, §4-Q5 später)."""
+    domain: str
+    settable: dict = field(default_factory=dict)
+    adjustable: frozenset = frozenset()
+
+
+def _feat(attrs: dict, domain: str, cap: str) -> bool:
+    bit = _FEAT_BITS.get((domain, cap))
+    sf = attrs.get("supported_features")
+    if bit is None or not isinstance(sf, (int, float)):
+        return False
+    return bool(int(sf) & bit)
+
+
+def _ordered(present, canonical) -> tuple:
+    """GERÄTE-Werte in KANONISCHER Reihenfolge (Enum-Definition), unbekannte alphabetisch hinten.
+    §6.5-LOCK: stabile Sortierung statt set-/Quell-Iteration → byte-identisches allowed train==serve.
+    Extras werden `sorted` (nicht in Quell-Reihenfolge) → auch der unbekannt-Zweig ist quell-order-
+    unabhängig (Opus-Gate S2; greift real nur, falls HA einen nicht-Standard-hvac-Mode meldet)."""
+    p = list(present or [])
+    known = [c for c in canonical if c in p]
+    extra = sorted(x for x in p if x not in canonical)
+    return tuple(known + extra)
+
+
+def _range(attrs, lo_key, hi_key, step_key, unit, adj=False):
+    """Range-Spec aus min/max-Attributen; fehlen beide → kind='any' (konservativ, §2-Fallback)."""
+    lo, hi = attrs.get(lo_key), attrs.get(hi_key)
+    if lo is None and hi is None:
+        return Spec("any", unit=unit)
+    step = attrs.get(step_key)
+    return Spec("range", lo=_num_or(lo), hi=_num_or(hi),
+                step=_num_or(step), unit=unit)
+
+
+def _num_or(x):
+    return _num(float(x)) if isinstance(x, (int, float)) else x
+
+
+def capabilities_of(domain: str, state_like: dict) -> Caps:
+    """(domain, {"state","attributes"}) → Caps. Geteilt train==serve. Liest NUR Attribute (§1-Quelle
+    je Attribut); absente Capability-Introspektion ⇒ konservativ (kind='any'), nie über-ablehnen."""
+    attrs = (state_like or {}).get("attributes") or {}
+    s: dict = {}
+    adj: set = set()
+
+    if domain == "climate":
+        s["temperature"] = _range(attrs, "min_temp", "max_temp", "target_temp_step", "°C"); adj.add("temperature")
+        if "hvac_modes" in attrs:
+            s["hvac_mode"] = Spec("enum", values=_ordered(attrs["hvac_modes"], HVAC_MODES))
+        else:
+            s["hvac_mode"] = Spec("any")
+        if "preset_modes" in attrs:
+            s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))
+
+    elif domain in ("light",):
+        modes = attrs.get("supported_color_modes")
+        if modes is None or set(modes) != {"onoff"}:       # onoff-only kann keine Helligkeit
+            s["brightness"] = Spec("range", lo=1, hi=100, unit="%"); adj.add("brightness")
+        if modes is None:
+            s["color"] = Spec("any")                        # blank → konservativ akzeptieren
+        elif set(modes) & _COLOR_CAP_MODES:
+            s["color"] = Spec("enum", values=COLOR_WORDS)   # echte Farbe → Farbwort-Enum
+        # sonst: color NICHT fähig → omit ⇒ not_capable
+        if modes is None:
+            s["color_temp"] = Spec("any")
+        elif "color_temp" in modes:
+            s["color_temp"] = _range(attrs, "min_color_temp_kelvin", "max_color_temp_kelvin", None, "K"); adj.add("color_temp")
+        el = attrs.get("effect_list")
+        if el:
+            s["effect"] = Spec("enum", values=tuple(el))    # RAW-Order (§6.5-LOCK S1) — WLED-180 → Truncation im Result
+
+    elif domain == "fan":
+        # §2-Fallback 0–100 unbedingt (auch ohne SET_SPEED-Bit) — bewusste Design-Entscheidung:
+        # beide Seiten claimen es gleich (kein Paritätsproblem), aber preset-only-Fans ohne SET_SPEED
+        # täuschen Erfolg vor (accept-and-ignore, §6.9-Q9-Klasse) → am P2-Gate ggf. per Bit gaten.
+        s["fan_speed"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("fan_speed")
+        if "preset_modes" in attrs:                          # gerätespez. Liste → RAW-Order (§6.5-LOCK S1:
+            s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))   # Cap-Haus kopiert Live-Order verbatim)
+        if _feat(attrs, "fan", "oscillate"):
+            s["oscillate"] = Spec("enum", values=ONOFF)
+
+    elif domain == "cover":
+        if _feat(attrs, "cover", "position"):
+            s["position"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("position")
+        if _feat(attrs, "cover", "tilt"):
+            s["tilt"] = Spec("range", lo=0, hi=100, unit="%")
+
+    elif domain == "media_player":
+        if _feat(attrs, "media_player", "volume"):
+            s["volume"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("volume")
+
+    elif domain in ("select", "input_select"):   # options RAW-Order (§6.5-LOCK S1: Cap-Haus = Live-Order verbatim)
+        s["option"] = Spec("enum", values=tuple(attrs["options"])) if "options" in attrs else Spec("any")
+
+    elif domain in ("number", "input_number"):
+        s["value"] = _range(attrs, "min", "max", "step", None)
+
+    elif domain == "humidifier":
+        s["humidity"] = _range(attrs, "min_humidity", "max_humidity", None, "%"); adj.add("humidity")
+
+    elif domain == "lock":
+        s["lock"] = Spec("enum", values=LOCK_STATES)
+
+    elif domain == "alarm_control_panel":
+        s["alarm"] = Spec("enum", values=ALARM_STATES)
+
+    return Caps(domain=domain, settable=s,
+                adjustable=frozenset(adj & set(ADJUSTABLE_ATTRS)))
+
+
+def _available_attrs(caps: Caps) -> list:
+    """settable-Attr-Keys in kanonischer Reihenfolge (für not_capable-`available`)."""
+    return sorted(caps.settable, key=lambda a: (_ATTR_ORDER.index(a) if a in _ATTR_ORDER else 99, a))[:_ALLOWED_TRUNC_N]
+
+
+def _clamp(canon, spec: Spec):
+    """(effektiver_wert, clamped_flag). done_clamped MELDEN erst jenseits Grenze+MARGIN (§6.5);
+    innerhalb der Marge still auf Grenzwert = `done`. Marge: 5pp (pct) bzw. 1 Range-Step."""
+    lo, hi = spec.lo, spec.hi
+    margin = CLAMP_MARGIN_PCT if spec.unit == "%" else (spec.step or 1)
+    if hi is not None and canon > hi:
+        return _num_or(hi), (canon > hi + margin)
+    if lo is not None and canon < lo:
+        return _num_or(lo), (canon < lo - margin)
+    return canon, False
+
+
+def plan_set_state(attr, value, caps: Caps | None):
+    """(canon, unit, clamped, err) — set_value_or_error + entity-echte Fähigkeits-/Wert-Prüfung.
+    Vorrang (§6.3): (1) Ziel-Fähigkeit `not_capable` → (2) globale Wert-Normalisierung → (3) entity-
+    echter Constraint (Range→Klemmung/done_clamped, Enum→geräte-echtes invalid_value).
+    caps=None ⇒ reiner set_value_or_error-Fallback (kein Gate — Introspektion nicht verfügbar)."""
+    if caps is None:
+        canon, unit, err = set_value_or_error(attr, value)
+        return canon, unit, False, err
+    spec = caps.settable.get(attr)
+    if spec is None:                                    # (1) Attribut nicht fähig → not_capable
+        return None, None, False, err_not_controllable(attr, available=_available_attrs(caps))
+    canon, unit, err = set_value_or_error(attr, value)  # (2) pct/Farb-Synonym/Kelvin + globales invalid
+    if err:
+        return None, None, False, err                  # z.B. Farbe „gold" (gamut-fremd, globales allowed)
+    if spec.kind == "any":
+        return canon, unit, False, None
+    if spec.kind == "enum":                             # (3a) geräte-echte Enum (AC ohne heat, WLED-effect)
+        if canon in spec.values:
+            return canon, unit, False, None
+        return None, None, False, err_invalid_value(attr, value, list(spec.values[:_ALLOWED_TRUNC_N]))
+    if spec.kind == "range":                            # (3b) Klemmung → done_clamped
+        eff, clamped = _clamp(canon, spec)
+        return eff, (spec.unit or unit), clamped, None
+    return canon, unit, False, None
+
+
 # ── Shaper (beide call-sites) ──────────────────────────────────────────────────
 def shape_turn(names: list) -> dict:
     return ok(targets=names)
@@ -304,10 +521,12 @@ def deferred_result(verb: str, args: dict, exposure: dict) -> tuple:
     return ok(targets=names_of(exposure, eids)), eids
 
 
-def shape_set_state(names: list, canon, unit) -> dict:
+def shape_set_state(names: list, canon, unit, clamped=False) -> dict:
     out = ok(targets=names, value=canon)
     if unit:
         out["unit"] = unit
+    if clamped:                              # v23.5 P1b: done_clamped — echoter Wert = effektiv (geklemmt)
+        out["clamped"] = True
     return out
 
 
@@ -618,11 +837,41 @@ def _say_entity(targets: list, args: dict):
     return uniq[0] if len(uniq) == 1 else " und ".join(uniq)
 
 
+# ── B1 Failure-say (v23.5): truthful phrase für Sackgassen-Fehler von Aktions-Verben ──
+# Ohne say halluziniert das 350M Erfolg bei ok:false (der EINE echte Truthfulness-Fehler der Bench,
+# Cases succ#36: turn_off Erdgeschoss → {ok:false,no_targets} → Modell „das Licht ist aus"). Wir geben
+# dem Modell eine wahre Phrase zum Umformulieren. NUR „Sackgassen"-Fehler ohne Klärungspfad; Klärungs-
+# Fehler (ambiguous, entity_not_found+did_you_mean, invalid_value) bleiben None → Gold trägt die
+# „?"-Rückfrage (H, P1b-Enrichment). unsafe bleibt None → refuse-Rubrik/Gold. Read-Fehler (no_data)
+# erreichen say_for_call nie (Reads laufen ohne with_say). Phrasen an _FAIL_MARKERS (Generator) geerdet.
+_FAIL_SAY = {
+    "no_targets": "Das hat nicht geklappt — ich habe kein passendes Gerät gefunden.",
+    "not_controllable": "Das lässt sich nicht steuern.",
+    "timeout": "Das hat gerade nicht funktioniert.",
+    "unparseable": "Das hat gerade nicht funktioniert.",
+}
+
+
+def fail_say_for_call(verb: str, r: dict):
+    """Wahrheits-Phrase für einen Sackgassen-Fehler (kein Klärungspfad) eines Aktions-Verbs.
+    None → Klärungs-Fehler (dym/ambiguous/invalid_value), unsafe, oder unbekannter Code → Gold trägt es."""
+    err = r.get("error")
+    if err == "entity_not_found":
+        if r.get("did_you_mean"):
+            return None                      # → Klärung „meintest du X?" (Gold, endet auf „?")
+        q = r.get("query")
+        return f"Ich habe {q} nicht gefunden." if q else _FAIL_SAY["no_targets"]
+    if err == "unavailable":
+        q = r.get("query")
+        return f"{q} ist gerade nicht erreichbar." if q else "Das Gerät ist gerade nicht erreichbar."
+    return _FAIL_SAY.get(err)
+
+
 def say_for_call(verb: str, args: dict, r: dict):
     """Deterministische Wahrheits-Phrase aus (Verb, Args, Result-Ziele/Wert). None → kein `say`
-    (Fehler-Result, Read, oder Fälle ohne eindeutige Ausführungs-Wahrheit → Gold trägt sie)."""
+    (Klärungs-/Read-Fehler oder Fälle ohne eindeutige Ausführungs-Wahrheit → Gold trägt sie)."""
     if not r.get("ok"):
-        return None
+        return fail_say_for_call(verb, r)
     ent = _say_entity(r.get("targets") or [], args)
     if verb in _TURN_SAY:
         return f"{ent} {_TURN_SAY[verb]}" if ent else None
@@ -669,10 +918,23 @@ def say_for_call(verb: str, args: dict, r: dict):
     if verb == "run_routine":
         return f"{ent} ausgeführt" if ent else None
     if verb == "set_timer":
-        if args.get("action", "set") != "set":
-            return "Timer abgebrochen"
+        act = args.get("action", "set")
         dur = args.get("duration")
-        return f"Timer über {dur} gestellt" if dur else "Timer gestellt"
+        if act == "set":
+            return f"Timer über {dur} gestellt" if dur else "Timer gestellt"
+        if act == "cancel":
+            return "Timer abgebrochen"
+        if act == "cancel_all":
+            return "Alle Timer abgebrochen"
+        if act == "pause":
+            return "Timer pausiert"
+        if act == "resume":
+            return "Timer fortgesetzt"
+        if act == "add":
+            return f"Timer um {dur} verlängert" if dur else "Timer verlängert"
+        if act == "subtract":
+            return f"Timer um {dur} verkürzt" if dur else "Timer verkürzt"
+        return None                          # check → Gold trägt die Restzeit (remaining erst P2)
     if verb == "announce":
         return "Durchsage abgespielt"
     return None
