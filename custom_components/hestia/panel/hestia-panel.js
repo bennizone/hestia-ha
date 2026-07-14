@@ -357,8 +357,11 @@ button, input, textarea { font: inherit; color: inherit; }
 .chk:hover { background: var(--surface-2); }
 .chk.on { background: var(--accent-soft); }
 .chk input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
+.chk-txt { min-width: 0; }
 .chk-nm { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.chk-eid { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; }
+.chk-eid { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chk-unit { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hc-lockhint { margin: 0 0 8px; }
 select.inp { cursor: pointer; }
 
 /* ── Custom-Sätze ── */
@@ -1305,6 +1308,21 @@ class HestiaPanel extends HTMLElement {
     const numeric = d.kind === "numeric";
     const doms = numeric ? ["sensor", "number", "input_number"] : ["binary_sensor"];
     const q = this._hcSearch.trim().toLowerCase();
+    const norm = (u) => (u || "").trim();   // „°C " == „°C", damit valide Quellen nicht rausfiltern (c)
+    // (b) climate-Attribute (Ist-Temp/-Feuchte) als virtuelle numerische Quellen: HA-min_max liest
+    // nur States, climate führt die Temperatur aber nur als Attribut. Kodierung "<climate_eid>::<attr>";
+    // beim Anlegen legt das Backend automatisch eine Template-Sensor-Brücke an (helpers.py).
+    const CATTR = {
+      current_temperature: { label: "Ist-Temperatur", unit: (this._hass.config && this._hass.config.unit_system && this._hass.config.unit_system.temperature) || "°C" },
+      current_humidity: { label: "Ist-Luftfeuchte", unit: "%" },
+    };
+    // Normalisierte Unit einer echten ODER virtuellen ("eid::attr") Quelle — für den Metrik-Lock.
+    const unitOf = (eid) => {
+      const i = eid.indexOf("::");
+      if (i >= 0) { const c = CATTR[eid.slice(i + 2)]; return norm(c && c.unit); }
+      const s = this._hass.states[eid];
+      return norm(s && s.attributes && s.attributes.unit_of_measurement);
+    };
     // Area einer Entität (entity- oder device-Area) — Benni: „ich weiß nicht wo Temperatur 01 ist".
     const areaName = (eid) => {
       const ent = (this._hass.entities || {})[eid];
@@ -1317,25 +1335,44 @@ class HestiaPanel extends HTMLElement {
     // gleiche device_class (binär) zeigen — Mischen macht keinen Sinn (min_max braucht gleiche Unit).
     let lockKey = null;
     if (d.entities.length) {
-      const f = this._hass.states[d.entities[0]];
-      lockKey = f ? (numeric ? ((f.attributes && f.attributes.unit_of_measurement) || "")
-                             : ((f.attributes && f.attributes.device_class) || "")) : null;
+      if (numeric) lockKey = unitOf(d.entities[0]);
+      else { const f = this._hass.states[d.entities[0]]; lockKey = f ? norm(f.attributes && f.attributes.device_class) : null; }
     }
-    const out = [];
+    const items = [];
+    let hidden = 0;
     for (const eid in (this._hass.states || {})) {
       const dom = eid.split(".")[0];
       if (!doms.includes(dom)) continue;
       const s = this._hass.states[eid];
       const nm = (s.attributes && s.attributes.friendly_name) || eid;
       if (q && !nm.toLowerCase().includes(q) && !eid.toLowerCase().includes(q)) continue;
-      const unit = (s.attributes && s.attributes.unit_of_measurement) || "";
-      const dc = (s.attributes && s.attributes.device_class) || "";
+      const unit = norm(s.attributes && s.attributes.unit_of_measurement);
+      const dc = norm(s.attributes && s.attributes.device_class);
       const sel = d.entities.includes(eid);
-      if (lockKey !== null && !sel && (numeric ? unit : dc) !== lockKey) continue;  // gewählte immer zeigen (abwählbar)
-      out.push({ eid, nm, unit, area: areaName(eid) });
+      if (lockKey !== null && !sel && (numeric ? unit : dc) !== lockKey) { hidden++; continue; }  // gewählte immer zeigen (abwählbar)
+      items.push({ eid, nm, unit, area: areaName(eid) });
     }
-    out.sort((a, b) => a.nm.localeCompare(b.nm));
-    return out;
+    // (b) virtuelle climate-Attribut-Quellen (nur numeric; nur wenn das Gerät den Wert wirklich führt).
+    if (numeric) {
+      for (const eid in (this._hass.states || {})) {
+        if (!eid.startsWith("climate.")) continue;
+        const s = this._hass.states[eid];
+        const fn = (s.attributes && s.attributes.friendly_name) || eid;
+        for (const attr in CATTR) {
+          const raw = s.attributes && s.attributes[attr];
+          if (raw == null || raw === "" || isNaN(Number(raw))) continue;
+          const veid = `${eid}::${attr}`;
+          const nm = `${fn} · ${CATTR[attr].label}`;
+          if (q && !nm.toLowerCase().includes(q) && !eid.toLowerCase().includes(q)) continue;
+          const unit = norm(CATTR[attr].unit);
+          const sel = d.entities.includes(veid);
+          if (lockKey !== null && !sel && unit !== lockKey) { hidden++; continue; }
+          items.push({ eid: veid, nm, unit, area: areaName(eid), sub: `${eid} · Geräte-Attribut` });
+        }
+      }
+    }
+    items.sort((a, b) => a.nm.localeCompare(b.nm));
+    return { items, lock: lockKey || null, hidden };  // lock=null wenn leer/keine Wahl → kein Hinweis
   }
 
   _renderHelperModal() {
@@ -1344,13 +1381,18 @@ class HestiaPanel extends HTMLElement {
     const isNum = d.kind === "numeric";
     const seg = (key, cur, opts) => `<div class="seg">${opts.map(([k, l]) =>
       `<button class="seg-b${cur === k ? " on" : ""}" data-${key}="${k}">${l}</button>`).join("")}</div>`;
-    const src = this._hcSources();
+    const { items: src, lock, hidden } = this._hcSources();
     const checklist = src.length ? src.map((c) => {
       const on = d.entities.includes(c.eid);
-      const meta = `${c.area ? esc(c.area) + " · " : ""}${esc(c.eid)}${c.unit ? " · " + esc(c.unit) : ""}`;
+      const sub = `${c.area ? esc(c.area) + " · " : ""}${esc(c.sub || c.eid)}`;
       return `<label class="chk${on ? " on" : ""}"><input type="checkbox" data-ent="${esc(c.eid)}"${on ? " checked" : ""}>
-        <span class="chk-nm">${esc(c.nm)}</span><span class="chk-eid">${meta}</span></label>`;
+        <div class="chk-txt"><div class="chk-nm">${esc(c.nm)}</div><div class="chk-eid">${sub}</div></div>
+        <span class="chk-unit">${esc(c.unit || "")}</span></label>`;
     }).join("") : `<div class="empty-state" style="padding:24px">Keine passenden ${isNum ? "Sensoren/Regler" : "Binärsensoren"} gefunden.</div>`;
+    // (c) Metrik-Lock sichtbar machen: sagen WARUM andere Quellen ausgeblendet sind.
+    const lockHint = lock
+      ? `<div class="hint hc-lockhint">Gefiltert auf ${isNum ? "Einheit" : "Typ"} „${esc(lock)}"${hidden ? ` — ${hidden} andere ausgeblendet` : ""} (Ø·min·max braucht gleiche Einheit; Auswahl abwählen hebt den Filter auf).</div>`
+      : "";
 
     const areaOpts = `<option value="">— keine Area —</option>` +
       (this._areas || []).slice().sort((a, b) => a.name.localeCompare(b.name))
@@ -1375,6 +1417,7 @@ class HestiaPanel extends HTMLElement {
         <div class="field"><label>Quell-Entitäten <span class="hint">— ${d.entities.length} gewählt</span></label>
           <div class="search hc-search">${svg('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>', 16)}
             <input placeholder="Suchen…" id="hcSearch" value="${esc(this._hcSearch)}"></div>
+          ${lockHint}
           <div class="checklist">${checklist}</div>
         </div>
         <div class="field"><label>Area <span class="hint">— optional, für die Raum-Zuordnung</span></label>
