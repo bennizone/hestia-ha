@@ -36,6 +36,20 @@ def _aliases(entry) -> list[str]:
     return [a for a in getattr(entry, "aliases", ()) if isinstance(a, str) and a.strip()]
 
 
+def _cap_attributes(entry) -> dict:
+    """v23.6 P1b Serve-Wiring: cap-relevante Attribute für den Cap-Tag (captag.py-Naht train==serve).
+    Quelle = STABILE entity_registry-Capability (`entry.capabilities`: effect_list/hvac_modes/fan_modes/
+    swing_modes/preset_modes/source_list/options/min-max_temp/color_temp-Kelvin — genau die Keys, die
+    capabilities_of/cap_tag lesen), NICHT der volatile Live-State: sonst flattert der Tag bei
+    `unavailable` und bricht den statischen Prefix-Cache (R5-Lock). `supported_features` gatet
+    osc/tilt/vol/src (§2-Bitmask). Leer ⇒ leerer Tag (D3, byte-identisch zu train-Backfill-loser Entität)."""
+    a = dict(getattr(entry, "capabilities", None) or {})
+    sf = getattr(entry, "supported_features", None)
+    if sf:
+        a["supported_features"] = sf
+    return a
+
+
 def _entity_area_id(entry, dev_reg) -> str | None:
     """Area der Entität: direkt gesetzt, sonst über das Gerät."""
     if entry.area_id:
@@ -84,6 +98,8 @@ def build_exposure(hass: HomeAssistant) -> dict[str, dict]:
             "area": area_name,
             "floor": floor_name,
             "expose": True,
+            # v23.6 P1b: cap-relevante Attribute (Registry-Capability) → Cap-Tag rendert serve==train.
+            "cap_attributes": _cap_attributes(entry),
             # SERVE-only: WRITE-Mapping-Range (mapping.norm → Tuple|None). Der geteilte Result-Layer
             # liest diesen Key NIE → kein Einfluss aufs Tool-JSON (train==serve bleibt intakt).
             "limit": mapping.norm(srec["limit_min"], srec["limit_max"]),
@@ -105,7 +121,8 @@ def build_house(hass: HomeAssistant, exposure: dict[str, dict],
     groups: dict[tuple, list] = {}   # (floor, area_name) -> [Entity]
     for rec in exposure.values():
         ent = Entity(name=rec["llm_name"], domain=rec["domain"], aliases=tuple(rec["aliases"]),
-                     description=rec.get("description", ""))
+                     description=rec.get("description", ""),
+                     attributes=rec.get("cap_attributes") or {})   # v23.6 P1b: Cap-Tag serve==train
         groups.setdefault((rec["floor"], rec["area"] or ""), []).append(ent)
     areas = [Area(name=area_name, floor=floor,
                   entities=tuple(sorted(ents, key=lambda x: x.name)))

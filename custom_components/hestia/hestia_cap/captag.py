@@ -6,12 +6,10 @@ Lampe) und Disambiguierung (nur EINE von zwei Lampen kann Farbe).
 
 Naht (train==serve): der Tag wird im statischen Prefix gerendert (render._entity_token) und ist
 damit byte-identisch, WENN beide Seiten dieselbe `House` mit denselben `Entity.attributes` füttern.
-  ⚠ SERVE-WIRING OFFEN (P1-Review-Blocker, Fable 2026-07-15): `hestia-ha/house_builder.py` baut
-    Entities aktuell OHNE `attributes` → serve rendert leere Tags, train (Cap-Profile-Backfill) volle
-    → train≠serve. Bevor r4 ins Training/Prod geht, MUSS house_builder cap-relevante Attribute
-    (bevorzugt aus der stabilen entity_registry-Capability, NICHT dem volatilen Live-State — sonst
-    flattert der Tag bei `unavailable` und bricht den Prefix-Cache) in Entity.attributes reichen,
-    plus ein Paritäts-Test über die ECHTE Serve-Bau-Route. Getrackt als P1b/serve-wiring.
+  ✓ SERVE-WIRING ERLEDIGT (P1b, Batch1a 2026-07-15): `hestia-ha/house_builder.py::_cap_attributes`
+    reicht cap-relevante Attribute aus der stabilen entity_registry-Capability (`entry.capabilities`
+    + `supported_features`, NICHT Live-State — kein Flattern bei `unavailable`) in Entity.attributes;
+    Cap-Tag rendert serve==train. Paritäts-Test über die ECHTE Serve-Bau-Route in hestia-ha.
   R5-Lock: kein Precompute/Store-Cache — der Tag wird pro Render aus den House-Attributen erzeugt.
 
 Design-Entscheidungen (P1 — Fable+Opus-reviewt 2026-07-15; Divergenzen ggü. X-Sweep-Prototyp bewusst):
@@ -29,17 +27,17 @@ Design-Entscheidungen (P1 — Fable+Opus-reviewt 2026-07-15; Divergenzen ggü. X
      klären) statt over-zu-claimen. Tag ⊆ Executor-akzeptiert (konservativ Richtung False-Negative).
   D5 **fan_speed** ist in caps ein §2-Fallback (IMMER da) → nicht-unterscheidend, nicht gerendert;
      die speed-vs-preset-only-Wahrheit kommt mit L6 (vor P10).
-  D6 **Domain-Scope P1** = {light, climate, fan, media_player, cover}. cover ergänzt (Review Fable#4:
-     einzige heute schon executor-verdrahtete Domain mit Cap-Lücke — ~⅓ Rollos ohne SET_POSITION).
-     select/number/humidifier folgen nach dem P4-Coverage-Audit (Struktur trägt sie trivial).
+  D6 **Domain-Scope** = {light, climate, fan, media_player, cover, select} (select v23.6 Batch1a nach
+     P4-Coverage-Audit ergänzt — options ist bimodal wie effect_list, G1). climate trägt jetzt zusätzlich
+     fan_modes/swing_modes (Batch1a G3/G2). number/humidifier + Growth-Domains folgen in Batch1b.
   D7 **Sanitisierung** (Review Opus#1/Fable#7): geräte-kontrollierter Advertiser-Text (source/effect/
      preset-Namen) wird von Struktur-Zeichen (`/ · : [ ]` + Whitespace/Newline) befreit, bevor er in
      die Tag-Syntax gejoint wird — sonst fälscht `Rock/Pop` die Listenlänge/X=8 oder bricht `]` das Token.
 
 SEQUENZ (advertised⊆executable, Benni-GO 2026-07-15): der Tag bewirbt effect/hvac_mode/preset/oscillate/
-tilt — diese sind seit **P3-wire** (result.py `EXECUTABLE_ATTRS`, executor `_dispatch_attr`) executor-
-verdrahtet, der Tag bewirbt also nur noch Ausführbares. Noch DEFERRED (nicht im Tag-Scope): `option`
-(select). Frühere „kann-noch-nicht"-Warnung damit erledigt.
+tilt (P3-wire) + swing_mode/fan_mode/option (Batch1a) — alle sind executor-verdrahtet (result.py
+`EXECUTABLE_ATTRS`, executor `_dispatch_attr`), der Tag bewirbt also nur Ausführbares. Nichts mehr im
+Tag-Scope deferred; Growth-Domains (vacuum/humidifier/…) folgen in Batch1b.
 """
 from __future__ import annotations
 
@@ -107,6 +105,12 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
         pre = _lst("pre", a.get("preset_modes"), x)                # Advertiser (RAW-Order, D2/D7)
         if pre:
             parts.append(pre)
+        fm = _lst("fan", a.get("fan_modes"), x)                    # v23.6 Batch1a: climate-Lüftermodus (≠ fan-Domain)
+        if fm:
+            parts.append(fm)
+        sw = _lst("swing", a.get("swing_modes"), x)                # v23.6 Batch1a: Schwenk-Modus
+        if sw:
+            parts.append(sw)
 
     elif domain == "fan":
         pre = _lst("pre", a.get("preset_modes"), x)                # D5: fan_speed nicht rendern
@@ -129,5 +133,10 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
             parts.append("pos")
         if "tilt" in s:                                            # bit-gegated (SET_TILT) in caps
             parts.append("tilt")
+
+    elif domain in ("select", "input_select"):                     # v23.6 Batch1a: options-Enum (G1)
+        opt = _lst("opt", a.get("options"), x)                     # Advertiser (RAW-Order, D2/D7); bimodal wie fx
+        if opt:
+            parts.append(opt)
 
     return ":" + "·".join(parts) if parts else ""

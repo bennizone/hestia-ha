@@ -35,12 +35,13 @@ from .schema import (ADJUSTABLE_ATTRS, ALARM_STATES, COLOR_SYNONYMS, COLOR_WORDS
 ATTR_DOMAIN = {"temperature": "climate", "brightness": "light", "color": "light",
                "color_temp": "light", "volume": "media_player", "position": "cover",
                "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel",
-               "effect": "light", "hvac_mode": "climate", "oscillate": "fan", "tilt": "cover"}
+               "effect": "light", "hvac_mode": "climate", "oscillate": "fan", "tilt": "cover",
+               "swing_mode": "climate", "fan_mode": "climate"}   # v23.6 Batch1a: single-domain climate-Enums
 
 # Set-State-Attribute, die der Executor DISPATCHEN kann (Executability-Gate, getrennt von der
-# Narrowing-Map ATTR_DOMAIN): alle eindeutigen + `preset` (climate/fan, per-Entität geplant). Attribute
-# ∉ EXECUTABLE_ATTRS (z.B. `option`/select — nicht im Cap-Tag-Scope) → not_controllable auf BEIDEN Seiten.
-EXECUTABLE_ATTRS = frozenset(ATTR_DOMAIN) | {"preset"}
+# Narrowing-Map ATTR_DOMAIN): alle eindeutigen + Multi-Domain-Attribute, die per Entität geplant/
+# nach Domain gesplittet werden: `preset` (climate/fan) + `option` (select/input_select, v23.6 Batch1a).
+EXECUTABLE_ATTRS = frozenset(ATTR_DOMAIN) | {"preset", "option"}
 
 # amount-Enum → Schrittweite (pct-Verben) bzw. Grad-Delta (temperature)
 STEP_PCT = {"a_little": 10, "some": 25, "a_lot": 50}
@@ -410,8 +411,12 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
             s["hvac_mode"] = Spec("enum", values=_ordered(attrs["hvac_modes"], HVAC_MODES))
         else:
             s["hvac_mode"] = Spec("any")
-        if "preset_modes" in attrs:
+        if attrs.get("preset_modes"):                     # truthy: HA legt Cap-Keys oft mit Wert None an (F1)
             s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))
+        if attrs.get("swing_modes"):                      # v23.6 Batch1a: RAW-Order (§6.5-LOCK S1); None-safe (F1)
+            s["swing_mode"] = Spec("enum", values=tuple(attrs["swing_modes"]))
+        if attrs.get("fan_modes"):                        # v23.6 Batch1a: climate-Lüftermodus (≠ fan-Domain fan_speed)
+            s["fan_mode"] = Spec("enum", values=tuple(attrs["fan_modes"]))
 
     elif domain in ("light",):
         modes = attrs.get("supported_color_modes")
@@ -435,8 +440,8 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
         # beide Seiten claimen es gleich (kein Paritätsproblem), aber preset-only-Fans ohne SET_SPEED
         # täuschen Erfolg vor (accept-and-ignore, §6.9-Q9-Klasse) → am P2-Gate ggf. per Bit gaten.
         s["fan_speed"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("fan_speed")
-        if "preset_modes" in attrs:                          # gerätespez. Liste → RAW-Order (§6.5-LOCK S1:
-            s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))   # Cap-Haus kopiert Live-Order verbatim)
+        if attrs.get("preset_modes"):                        # gerätespez. Liste → RAW-Order (§6.5-LOCK S1); None-safe (F1:
+            s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))   # SET_SPEED-only-Fan trägt preset_modes=None)
         if _feat(attrs, "fan", "oscillate"):
             s["oscillate"] = Spec("enum", values=ONOFF)
 
@@ -451,7 +456,7 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
             s["volume"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("volume")
 
     elif domain in ("select", "input_select"):   # options RAW-Order (§6.5-LOCK S1: Cap-Haus = Live-Order verbatim)
-        s["option"] = Spec("enum", values=tuple(attrs["options"])) if "options" in attrs else Spec("any")
+        s["option"] = Spec("enum", values=tuple(attrs["options"])) if attrs.get("options") else Spec("any")  # None-safe (F1)
 
     elif domain in ("number", "input_number"):
         s["value"] = _range(attrs, "min", "max", "step", None)
@@ -472,8 +477,8 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
 def _available_attrs(caps: Caps) -> list:
     """not_capable-`available` = welche Attribute der Assistent DOCH setzen kann. Nur ASSISTANT-
     ausführbare (∩ EXECUTABLE_ATTRS, Benni 2026-07-14): jede angebotene Alternative ist erfüllbar (rev2-
-    Kernwert). v23.6 P3-wire: effect/hvac_mode/preset/oscillate/tilt sind jetzt executor-verdrahtet → sie
-    erscheinen als Alternativen; nur noch `option` (select) ist deferred und fällt raus. Kanon. Reihenfolge."""
+    Kernwert). v23.6 P3-wire + Batch1a: effect/hvac_mode/preset/oscillate/tilt/swing_mode/fan_mode/option
+    sind jetzt executor-verdrahtet → sie erscheinen als Alternativen. Kanon. Reihenfolge (_ATTR_ORDER)."""
     avail = [a for a in caps.settable if a in EXECUTABLE_ATTRS]
     return sorted(avail, key=lambda a: (_ATTR_ORDER.index(a) if a in _ATTR_ORDER else 99, a))[:_ALLOWED_TRUNC_N]
 
@@ -932,13 +937,16 @@ _ATTR_DE = {"color": "Farbe", "brightness": "Helligkeit", "color_temp": "Weißto
             "temperature": "Temperatur", "volume": "Lautstärke", "position": "Position",
             "fan_speed": "Geschwindigkeit", "hvac_mode": "Modus", "preset": "Voreinstellung",
             "effect": "Effekt", "option": "Einstellung", "tilt": "Neigung", "oscillate": "Schwenken",
+            "swing_mode": "Schwenkmodus", "fan_mode": "Lüftermodus",   # v23.6 Batch1a
             "humidity": "Luftfeuchte", "value": "Wert", "source": "Quelle"}
 _ATTR_NEG_DE = {"color": "keine Farbe", "brightness": "keine Helligkeit", "color_temp": "keinen Weißton",
                 "temperature": "keine Temperatur", "volume": "keine Lautstärke",
                 "position": "keine Position", "fan_speed": "keine Geschwindigkeit",
                 # v23.6 P3-wire: neue verdrahtete Attrs (korrektes Genus)
                 "effect": "keinen Effekt", "hvac_mode": "keinen Betriebsmodus", "preset": "kein Programm",
-                "oscillate": "kein Schwenken", "tilt": "keine Lamellen-Neigung"}
+                "oscillate": "kein Schwenken", "tilt": "keine Lamellen-Neigung",
+                # v23.6 Batch1a: option=Einstellung (fem!), swing/fan_mode (masc)
+                "option": "keine Einstellung", "swing_mode": "keinen Schwenkmodus", "fan_mode": "keinen Lüftermodus"}
 
 
 def _join_de(items) -> str:

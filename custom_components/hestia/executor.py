@@ -203,6 +203,21 @@ async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
         await hass.services.async_call("cover", "set_cover_tilt_position",   # `limit` gilt für position,
                                        {"entity_id": eids, "tilt_position": int(canon)},  # nicht die Tilt-Achse)
                                        blocking=True, context=context)
+    elif attr == "swing_mode":     # v23.6 Batch1a: canon ∈ swing_modes (Enum-gated)
+        await hass.services.async_call("climate", "set_swing_mode",
+                                       {"entity_id": eids, "swing_mode": canon},
+                                       blocking=True, context=context)
+    elif attr == "fan_mode":       # v23.6 Batch1a: climate-Lüftermodus, canon ∈ fan_modes (Enum-gated)
+        await hass.services.async_call("climate", "set_fan_mode",
+                                       {"entity_id": eids, "fan_mode": canon},
+                                       blocking=True, context=context)
+    elif attr == "option":         # v23.6 Batch1a: mehrdeutig → nach Domain splitten (select vs input_select)
+        for d in ("select", "input_select"):
+            de = [e for e in eids if exposure[e]["domain"] == d]
+            if de:
+                await hass.services.async_call(d, "select_option",
+                                               {"entity_id": de, "option": canon},
+                                               blocking=True, context=context)
     elif attr == "lock":            # Safety — nur erreichbar wenn unsafe_mode lock aus deny nahm
         await hass.services.async_call("lock", "lock" if canon == "locked" else "unlock",
                                        {"entity_id": eids}, blocking=True, context=context)
@@ -219,8 +234,8 @@ async def _set_state(hass, eids, names, args, exposure, context) -> dict:
     (done/done_clamped/not_capable/invalid_value/partial) train==serve. Dispatch NUR die geplant-
     ausführbaren Ziele, gebündelt nach effektivem (ggf. geräte-echt geklemmtem) Wert."""
     attr, val = args["attribute"], args["value"]
-    if attr not in R.EXECUTABLE_ATTRS:       # v23.6 P3-wire: effect/hvac_mode/preset/oscillate/tilt jetzt
-        return R.err_not_controllable(attr)  # verdrahtet; noch-deferred (option/select) → beide not_controllable
+    if attr not in R.EXECUTABLE_ATTRS:       # v23.6 P3-wire + Batch1a: effect/hvac_mode/preset/oscillate/
+        return R.err_not_controllable(attr)  # tilt/swing_mode/fan_mode/option verdrahtet (advertised⊆executable)
     entries = [(e, exposure[e]["llm_name"],
                 R.capabilities_of(exposure[e]["domain"], _state_read(hass, e) or {})) for e in eids]
     res, dispatch = R.plan_group_set_state(attr, val, entries)

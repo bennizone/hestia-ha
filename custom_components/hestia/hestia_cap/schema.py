@@ -61,6 +61,8 @@ SETTABLE_ATTRS = {
     "oscillate":  {"kind": "words", "values": ONOFF},
     "effect":     {"kind": "str"},   # Licht-Effekt (freier Name)
     "option":     {"kind": "str"},   # select/input_select-Option (freier Name)
+    "swing_mode": {"kind": "str"},   # climate Schwenk-Modus (geräte-echte swing_modes, caps-gated wie effect)
+    "fan_mode":   {"kind": "str"},   # climate Lüfter-Modus (geräte-echte fan_modes, caps-gated wie effect)
 }
 ADJUSTABLE_ATTRS = ("brightness", "volume", "temperature", "position", "fan_speed", "color_temp")
 # GET_ATTRS = Kern-Enum (breit, aber nicht Riesen-Enum). Feinere Discovery via `help`-Verb (Phase 3).
