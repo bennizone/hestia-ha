@@ -153,7 +153,8 @@ async def _dispatch_pct(hass, domain, service, param, eids, exposure, canon, con
 async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
     """Ein set_state-Attribut mit EINEM effektiven Wert an HA dispatchen (Service-Map = statischer
     WIE-Teil; das OB entscheidet capabilities_of vorher). pct-Attrs via _dispatch_pct (Limit-Mapping
-    virtuell→real). Nur ATTR_DOMAIN-Attribute erreichen diese Funktion (Guard im Aufrufer)."""
+    virtuell→real). Nur EXECUTABLE_ATTRS-Attribute erreichen diese Funktion (Guard im Aufrufer;
+    `preset` ∈ EXECUTABLE_ATTRS aber ∉ ATTR_DOMAIN — Multi-Domain, hier per Domain gesplittet)."""
     if attr == "brightness":
         await _dispatch_pct(hass, "light", "turn_on", "brightness_pct", eids, exposure, canon, context)
     elif attr == "volume":
@@ -175,6 +176,33 @@ async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
         await hass.services.async_call("light", "turn_on",
                                        {"entity_id": eids, "color_temp_kelvin": int(canon)},
                                        blocking=True, context=context)
+    elif attr == "effect":         # v23.6 P3-wire: Licht-Effekt (canon ∈ effect_list, Enum-gated)
+        await hass.services.async_call("light", "turn_on",
+                                       {"entity_id": eids, "effect": canon},
+                                       blocking=True, context=context)
+    elif attr == "hvac_mode":      # v23.6 P3-wire: Betriebsmodus (canon ∈ hvac_modes, Enum-gated)
+        await hass.services.async_call("climate", "set_hvac_mode",
+                                       {"entity_id": eids, "hvac_mode": canon},
+                                       blocking=True, context=context)
+    elif attr == "preset":         # v23.6 P3-wire: mehrdeutig → nach Domain splitten (climate vs fan)
+        cl = [e for e in eids if exposure[e]["domain"] == "climate"]
+        fn = [e for e in eids if exposure[e]["domain"] == "fan"]
+        if cl:
+            await hass.services.async_call("climate", "set_preset_mode",
+                                           {"entity_id": cl, "preset_mode": canon},
+                                           blocking=True, context=context)
+        if fn:
+            await hass.services.async_call("fan", "set_preset_mode",
+                                           {"entity_id": fn, "preset_mode": canon},
+                                           blocking=True, context=context)
+    elif attr == "oscillate":      # v23.6 P3-wire: canon ∈ {on,off} (ONOFF-Enum)
+        await hass.services.async_call("fan", "oscillate",
+                                       {"entity_id": eids, "oscillating": canon == "on"},
+                                       blocking=True, context=context)
+    elif attr == "tilt":           # v23.6 P3-wire: Lamellen-Position. DIREKT (kein Limit-Mapping —
+        await hass.services.async_call("cover", "set_cover_tilt_position",   # `limit` gilt für position,
+                                       {"entity_id": eids, "tilt_position": int(canon)},  # nicht die Tilt-Achse)
+                                       blocking=True, context=context)
     elif attr == "lock":            # Safety — nur erreichbar wenn unsafe_mode lock aus deny nahm
         await hass.services.async_call("lock", "lock" if canon == "locked" else "unlock",
                                        {"entity_id": eids}, blocking=True, context=context)
@@ -191,8 +219,8 @@ async def _set_state(hass, eids, names, args, exposure, context) -> dict:
     (done/done_clamped/not_capable/invalid_value/partial) train==serve. Dispatch NUR die geplant-
     ausführbaren Ziele, gebündelt nach effektivem (ggf. geräte-echt geklemmtem) Wert."""
     attr, val = args["attribute"], args["value"]
-    if attr not in R.ATTR_DOMAIN:            # deferred set_state-Attribute (hvac_mode/preset/effect/
-        return R.err_not_controllable(attr)  # option/oscillate/…) — HA-Dispatch = P3 → beide not_controllable
+    if attr not in R.EXECUTABLE_ATTRS:       # v23.6 P3-wire: effect/hvac_mode/preset/oscillate/tilt jetzt
+        return R.err_not_controllable(attr)  # verdrahtet; noch-deferred (option/select) → beide not_controllable
     entries = [(e, exposure[e]["llm_name"],
                 R.capabilities_of(exposure[e]["domain"], _state_read(hass, e) or {})) for e in eids]
     res, dispatch = R.plan_group_set_state(attr, val, entries)

@@ -26,11 +26,21 @@ from .schema import (ADJUSTABLE_ATTRS, ALARM_STATES, COLOR_SYNONYMS, COLOR_WORDS
                      HVAC_MODES, LOCK_STATES, ONOFF, SETTABLE_ATTRS)
 
 # ── Konstanten (aus executor.py gehoben — jetzt Single-Source) ────────────────
-# Attribut → zuständige Domain (set_state/adjust ohne explizites domain-Filter):
+# Attribut → zuständige (EINDEUTIGE) Domain (set_state/adjust ohne explizites domain-Filter):
 # „stell die Heizung auf 20" darf NUR climate treffen, nicht TVs/Lichter/Lüfter.
+# v23.6 P3-wire (2026-07-15): effect/hvac_mode/oscillate/tilt ergänzt — der Cap-Tag bewirbt sie ALLE
+# (fx/hvac-Modi/osc/tilt) → jetzt auch executor-verdrahtet (advertised⊆executable, Benni-GO). `preset`
+# fehlt BEWUSST: mehrdeutig (climate UND fan) → kein Single-Domain-Narrowing (sonst bricht „Lüfter auf
+# Schlaf"), aber ausführbar via EXECUTABLE_ATTRS (per-Entität geplant, Dispatch splittet nach Domain).
 ATTR_DOMAIN = {"temperature": "climate", "brightness": "light", "color": "light",
                "color_temp": "light", "volume": "media_player", "position": "cover",
-               "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel"}
+               "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel",
+               "effect": "light", "hvac_mode": "climate", "oscillate": "fan", "tilt": "cover"}
+
+# Set-State-Attribute, die der Executor DISPATCHEN kann (Executability-Gate, getrennt von der
+# Narrowing-Map ATTR_DOMAIN): alle eindeutigen + `preset` (climate/fan, per-Entität geplant). Attribute
+# ∉ EXECUTABLE_ATTRS (z.B. `option`/select — nicht im Cap-Tag-Scope) → not_controllable auf BEIDEN Seiten.
+EXECUTABLE_ATTRS = frozenset(ATTR_DOMAIN) | {"preset"}
 
 # amount-Enum → Schrittweite (pct-Verben) bzw. Grad-Delta (temperature)
 STEP_PCT = {"a_little": 10, "some": 25, "a_lot": 50}
@@ -461,10 +471,10 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
 
 def _available_attrs(caps: Caps) -> list:
     """not_capable-`available` = welche Attribute der Assistent DOCH setzen kann. Nur ASSISTANT-
-    setzbare (∩ ATTR_DOMAIN, Benni 2026-07-14): jede angebotene Alternative ist erfüllbar (rev2-
-    Kernwert). Geräte-fähige aber serve-DEFERRED Attrs (effect/tilt/hvac_mode/…) fallen raus, bis
-    P3 sie verdrahtet — dann wachsen sie über ATTR_DOMAIN automatisch rein. Kanonische Reihenfolge."""
-    avail = [a for a in caps.settable if a in ATTR_DOMAIN]
+    ausführbare (∩ EXECUTABLE_ATTRS, Benni 2026-07-14): jede angebotene Alternative ist erfüllbar (rev2-
+    Kernwert). v23.6 P3-wire: effect/hvac_mode/preset/oscillate/tilt sind jetzt executor-verdrahtet → sie
+    erscheinen als Alternativen; nur noch `option` (select) ist deferred und fällt raus. Kanon. Reihenfolge."""
+    avail = [a for a in caps.settable if a in EXECUTABLE_ATTRS]
     return sorted(avail, key=lambda a: (_ATTR_ORDER.index(a) if a in _ATTR_ORDER else 99, a))[:_ALLOWED_TRUNC_N]
 
 
@@ -925,7 +935,10 @@ _ATTR_DE = {"color": "Farbe", "brightness": "Helligkeit", "color_temp": "Weißto
             "humidity": "Luftfeuchte", "value": "Wert", "source": "Quelle"}
 _ATTR_NEG_DE = {"color": "keine Farbe", "brightness": "keine Helligkeit", "color_temp": "keinen Weißton",
                 "temperature": "keine Temperatur", "volume": "keine Lautstärke",
-                "position": "keine Position", "fan_speed": "keine Geschwindigkeit"}
+                "position": "keine Position", "fan_speed": "keine Geschwindigkeit",
+                # v23.6 P3-wire: neue verdrahtete Attrs (korrektes Genus)
+                "effect": "keinen Effekt", "hvac_mode": "keinen Betriebsmodus", "preset": "kein Programm",
+                "oscillate": "kein Schwenken", "tilt": "keine Lamellen-Neigung"}
 
 
 def _join_de(items) -> str:
@@ -1059,6 +1072,8 @@ def say_for_call(verb: str, args: dict, r: dict):
                     f"{ent} aufgeschlossen" if val == "unlocked" else f"{ent} auf {val} gestellt")
         if attr == "open":
             return f"{ent} geöffnet" if val else f"{ent} geschlossen"
+        if attr == "oscillate":       # v23.6 P3-wire: ONOFF-canon nicht roh zitieren („auf on gestellt")
+            return f"{ent} schwenkt jetzt" if val == "on" else f"{ent} schwenkt nicht mehr"
         if unit == "%":
             return _clamp_suffix(f"{ent} auf {_fmt_num(val)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}",
                                  args, val, r)

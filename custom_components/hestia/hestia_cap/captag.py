@@ -36,10 +36,10 @@ Design-Entscheidungen (P1 — Fable+Opus-reviewt 2026-07-15; Divergenzen ggü. X
      preset-Namen) wird von Struktur-Zeichen (`/ · : [ ]` + Whitespace/Newline) befreit, bevor er in
      die Tag-Syntax gejoint wird — sonst fälscht `Rock/Pop` die Listenlänge/X=8 oder bricht `]` das Token.
 
-SEQUENZ-ABHÄNGIGKEIT (Review Opus#3/Fable#2): der Tag bewirbt auch serve-DEFERRED Attribute
-(effect/hvac_mode/preset — `ATTR_DOMAIN` setzt sie noch nicht, bis P3). r4 lebt bis P8/P9 im Branch;
-VOR dem Prod-/Trainings-Cutover muss P3 diese Attrs executor-verdrahten ODER die Trainingsdaten den
-ehrlichen „kann ich (noch) nicht"-Fall üben (sonst wirbt der Prompt für nicht ausführbare Aktionen).
+SEQUENZ (advertised⊆executable, Benni-GO 2026-07-15): der Tag bewirbt effect/hvac_mode/preset/oscillate/
+tilt — diese sind seit **P3-wire** (result.py `EXECUTABLE_ATTRS`, executor `_dispatch_attr`) executor-
+verdrahtet, der Tag bewirbt also nur noch Ausführbares. Noch DEFERRED (nicht im Tag-Scope): `option`
+(select). Frühere „kann-noch-nicht"-Warnung damit erledigt.
 """
 from __future__ import annotations
 
