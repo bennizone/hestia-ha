@@ -27,7 +27,9 @@ NEUES ATTRIBUT HINZUFÜGEN (Batch 1b usw.) — es ist bewusst MEHR als eine Zeil
          von `service` egal (Dispatch splittet über `domains` in dieser Order).
        · Setter ≠ `set_X`: beliebiges `service`-Tupel — z.B. remote `("remote","turn_on","activity")`.
        · pct-Namenskollision (vacuum): eigener attr-Name `vacuum_fan_speed`, list_key `fan_speed_list`.
-       · Bit-Gate (sound_mode SELECT_SOUND_MODE): `feat_bit=…` — ⚠ Konsument fehlt noch (s. Feld-Doc).
+       · Bit-Gate (sound_mode SELECT_SOUND_MODE): `feat_bit=…` — result `_enum_caps_for` + captag gaten
+         darauf (Phase-B-verdrahtet). Fix-Enum ohne Liste (fan.direction) = KEINE Zeile → oscillate-Klasse
+         (schema+result+captag+executor hand-verdrahtet, §10.5).
   2. `schema.SETTABLE_ATTRS`: Eintrag `{attr:{"kind":"str"}}` ans ENDE (Key-Order ist Prompt-byte-tragend).
   3. captag: `_adv`-Aufruf an der gewünschten Position im (evtl. neuen) Domain-Block.
   4. Generator `_cap_profile`: Archetyp-Block + Wert-Pool (Hand-Daten, §10.2).
@@ -45,6 +47,7 @@ PRESETS = ("eco", "boost", "away", "comfort", "home", "sleep")     # climate pre
 LOCK_STATES = ("locked", "unlocked")                              # + Safety-Gate (Zwei-Turn-Confirm)
 ALARM_STATES = ("armed_home", "armed_away", "armed_night", "disarmed")  # + Safety-Gate
 ONOFF = ("on", "off")                                            # oscillate/boolesche Attribute
+FAN_DIRECTION = ("forward", "reverse")                           # fan.direction — Fix-2-Enum (oscillate-Klasse, §10.5)
 
 
 @dataclass(frozen=True)
@@ -60,9 +63,11 @@ class EnumCapAttr:
     tag_label : captag-Advertiser-Präfix (`label:v1/v2/…`). "" ⇒ KEIN generischer Advertiser
                 (hvac_mode wird in captag HAND-gerendert: off-Filter + `_ordered` + modeN-Hinweis).
     de_noun   : `_ATTR_DE`-Nomen. de_neg: `_ATTR_NEG_DE`-Verneinung (Genus korrekt).
-    feat_bit  : optionales supported_features-Gate. ⚠ PHASE A OHNE KONSUMENT: die Gate-Logik
-                (capabilities_of/captag) kommt erst mit Phase B (§10.4, sound_mode SELECT_SOUND_MODE);
-                bis dahin wirkt feat_bit NICHT. Test in test_cap_attrs_table.py hält alle Zeilen auf None.
+    feat_bit  : optionales supported_features-Gate (Phase B verdrahtet, §10.4). Gesetzt NUR bei
+                sound_mode (SELECT_SOUND_MODE=65536): über-claim-sicher wie `src` — ein media_player
+                mit `sound_mode_list` aber ohne SELECT_SOUND_MODE-Bit ist NICHT fähig (result
+                `_enum_caps_for` überspringt ihn; captag gatet den Advertiser mit demselben Bit).
+                Alle anderen Zeilen tragen ein echtes Listen-Attribut → truthy-Guard reicht (feat_bit=None).
     """
     attr: str
     domains: tuple[str, ...]
@@ -100,11 +105,32 @@ ENUM_CAP_ATTRS = (
     EnumCapAttr(attr="option", domains=("select", "input_select"), list_key="options",
                 service=("select", "select_option", "option"), tag_label="opt",
                 de_noun="Einstellung", de_neg="keine Einstellung"),
+    # ── v23.6 Batch 1b (§10.5): Growth-Domains, additiv. Alle uniform (truthy+RAW+omit via
+    #    _enum_caps_for); sound_mode zusätzlich bit-gegated (feat_bit, Over-Claim-Schutz wie src). ──
+    EnumCapAttr(attr="sound_mode", domains=("media_player",), list_key="sound_mode_list",
+                service=("media_player", "select_sound_mode", "sound_mode"), tag_label="snd",
+                de_noun="Klangmodus", de_neg="keinen Klangmodus", feat_bit=65536),  # SELECT_SOUND_MODE
+    EnumCapAttr(attr="mode", domains=("humidifier",), list_key="available_modes",
+                service=("humidifier", "set_mode", "mode"), tag_label="mode",
+                de_noun="Modus", de_neg="keinen Modus"),
+    EnumCapAttr(attr="operation", domains=("water_heater",), list_key="operation_list",
+                service=("water_heater", "set_operation_mode", "operation_mode"), tag_label="op",
+                de_noun="Betriebsart", de_neg="keine Betriebsart"),
+    # remote: Setter ≠ set_X → remote.turn_on mit optionalem `activity`-String (§10.4-Sonderfall)
+    EnumCapAttr(attr="activity", domains=("remote",), list_key="activity_list",
+                service=("remote", "turn_on", "activity"), tag_label="act",
+                de_noun="Aktivität", de_neg="keine Aktivität"),
+    # vacuum: eigener Attr-Name `vacuum_fan_speed` (pct-Kollision mit fan-Domain fan_speed vermieden, §10.4)
+    EnumCapAttr(attr="vacuum_fan_speed", domains=("vacuum",), list_key="fan_speed_list",
+                service=("vacuum", "set_fan_speed", "fan_speed"), tag_label="spd",
+                de_noun="Saugstufe", de_neg="keine Saugstufe"),
 )
 
-# capabilities_of-Helfer `_enum_caps_for` deckt NUR diese ab (truthy + RAW + omit→not_capable);
-# hvac_mode (Key-Präsenz + `_ordered`) und option (truthy + any-Fallback) bleiben EXPLIZITE Zweige (§10.2).
-ENUM_CAPS_HELPER_ATTRS = ("effect", "preset", "fan_mode", "swing_mode")
+# capabilities_of-Helfer `_enum_caps_for` deckt NUR diese ab (truthy + RAW + omit→not_capable; sound_mode
+# zusätzlich feat_bit-gegated); hvac_mode (Key-Präsenz + `_ordered`) und option (truthy + any-Fallback)
+# bleiben EXPLIZITE Zweige (§10.2). Batch1b (sound_mode/mode/operation/activity/vacuum_fan_speed) sind uniform.
+ENUM_CAPS_HELPER_ATTRS = ("effect", "preset", "fan_mode", "swing_mode",
+                          "sound_mode", "mode", "operation", "activity", "vacuum_fan_speed")
 
 BY_ATTR = {r.attr: r for r in ENUM_CAP_ATTRS}
 # ATTR_DOMAIN-Beitrag (Single-Domain) bzw. EXECUTABLE-Beitrag (Multi-Domain):

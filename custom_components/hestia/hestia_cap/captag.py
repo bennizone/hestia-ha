@@ -27,17 +27,19 @@ Design-Entscheidungen (P1 — Fable+Opus-reviewt 2026-07-15; Divergenzen ggü. X
      klären) statt over-zu-claimen. Tag ⊆ Executor-akzeptiert (konservativ Richtung False-Negative).
   D5 **fan_speed** ist in caps ein §2-Fallback (IMMER da) → nicht-unterscheidend, nicht gerendert;
      die speed-vs-preset-only-Wahrheit kommt mit L6 (vor P10).
-  D6 **Domain-Scope** = {light, climate, fan, media_player, cover, select} (select v23.6 Batch1a nach
-     P4-Coverage-Audit ergänzt — options ist bimodal wie effect_list, G1). climate trägt jetzt zusätzlich
-     fan_modes/swing_modes (Batch1a G3/G2). number/humidifier + Growth-Domains folgen in Batch1b.
+  D6 **Domain-Scope** = {light, climate, fan, media_player, cover, select} + Batch1b Growth-Domains
+     {humidifier, water_heater, remote, vacuum}. climate trägt fan_modes/swing_modes (Batch1a G3/G2),
+     fan zusätzlich `dir` (direction, oscillate-Klasse), media_player zusätzlich `snd` (sound_mode,
+     SELECT_SOUND_MODE-bit-gegated wie src). options/mode/operation/activity/spd sind bimodal wie effect_list.
   D7 **Sanitisierung** (Review Opus#1/Fable#7): geräte-kontrollierter Advertiser-Text (source/effect/
      preset-Namen) wird von Struktur-Zeichen (`/ · : [ ]` + Whitespace/Newline) befreit, bevor er in
      die Tag-Syntax gejoint wird — sonst fälscht `Rock/Pop` die Listenlänge/X=8 oder bricht `]` das Token.
 
 SEQUENZ (advertised⊆executable, Benni-GO 2026-07-15): der Tag bewirbt effect/hvac_mode/preset/oscillate/
-tilt (P3-wire) + swing_mode/fan_mode/option (Batch1a) — alle sind executor-verdrahtet (result.py
-`EXECUTABLE_ATTRS`, executor `_dispatch_attr`), der Tag bewirbt also nur Ausführbares. Nichts mehr im
-Tag-Scope deferred; Growth-Domains (vacuum/humidifier/…) folgen in Batch1b.
+tilt (P3-wire) + swing_mode/fan_mode/option (Batch1a) + sound_mode/mode/operation/activity/vacuum_fan_speed/
+direction (Batch1b) — alle sind executor-verdrahtet (result.py `EXECUTABLE_ATTRS`, executor
+`_dispatch_attr`), der Tag bewirbt also nur Ausführbares. Nichts mehr im Tag-Scope deferred (v23.7-Deferred:
+siren tones, media repeat, climate swing_horizontal — §10.5).
 """
 from __future__ import annotations
 
@@ -47,7 +49,8 @@ from . import cap_attrs
 from .result import capabilities_of
 
 CAP_TAG_X = 8   # Inline-Schwelle GELOCKT (2026-07-15, X-Sweep): len(werte)≤8 → inline, >8 → labelN
-_SELECT_SOURCE = 2048   # MediaPlayerEntityFeature.SELECT_SOURCE (D1-Gate für src)
+_SELECT_SOURCE = 2048        # MediaPlayerEntityFeature.SELECT_SOURCE (D1-Gate für src)
+_SELECT_SOUND_MODE = 65536   # MediaPlayerEntityFeature.SELECT_SOUND_MODE (D1-Gate für snd, v23.6 Batch1b)
 _STRUCT = re.compile(r"[/·:\[\]\r\n\t]+")   # Tag-Struktur-Zeichen (D7)
 
 # Advertiser-Paare (tag_label, list_key) aus der Spec-Tabelle — Single-Source (Byte-identisch zu den
@@ -133,6 +136,8 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
             parts.append(pre)
         if "oscillate" in s:                                       # bit-gegated in caps
             parts.append("osc")
+        if "direction" in s:                                       # v23.6 Batch1b: DIRECTION-bit-gegated in caps
+            parts.append("dir")
 
     elif domain == "media_player":
         if "volume" in s:                                          # bit-gegated in caps (D1)
@@ -142,6 +147,10 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
             src = _lst("src", a.get("source_list"), x)             # Advertiser (RAW-Order, D2/D7)
             if src:
                 parts.append(src)
+        if sf & _SELECT_SOUND_MODE:                                # v23.6 Batch1b: snd bit-gegatet (== caps-feat_bit)
+            snd = _adv(a, "sound_mode", x)                         # Advertiser aus Tabelle (RAW-Order, D2/D7)
+            if snd:
+                parts.append(snd)
 
     elif domain == "cover":                                        # D6: heute executor-verdrahtet
         if "position" in s:                                        # bit-gegated (SET_POSITION) in caps
@@ -153,5 +162,25 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
         opt = _adv(a, "option", x)                                  # Advertiser aus Tabelle (RAW-Order, D2/D7); bimodal wie fx
         if opt:
             parts.append(opt)
+
+    elif domain == "humidifier":                                   # v23.6 Batch1b: mode-Enum (available_modes)
+        md = _adv(a, "mode", x)
+        if md:
+            parts.append(md)
+
+    elif domain == "water_heater":                                 # v23.6 Batch1b: operation-Enum (operation_list)
+        op = _adv(a, "operation", x)
+        if op:
+            parts.append(op)
+
+    elif domain == "remote":                                       # v23.6 Batch1b: activity-Enum (activity_list)
+        act = _adv(a, "activity", x)
+        if act:
+            parts.append(act)
+
+    elif domain == "vacuum":                                       # v23.6 Batch1b: fan_speed-Enum (fan_speed_list)
+        spd = _adv(a, "vacuum_fan_speed", x)
+        if spd:
+            parts.append(spd)
 
     return ":" + "·".join(parts) if parts else ""

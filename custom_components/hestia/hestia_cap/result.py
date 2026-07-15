@@ -24,21 +24,22 @@ from typing import Protocol, runtime_checkable
 
 from . import cap_attrs
 from .schema import (ADJUSTABLE_ATTRS, ALARM_STATES, COLOR_SYNONYMS, COLOR_WORDS,
-                     HVAC_MODES, LOCK_STATES, ONOFF, SETTABLE_ATTRS)
+                     FAN_DIRECTION, HVAC_MODES, LOCK_STATES, ONOFF, SETTABLE_ATTRS)
 
 # ── Konstanten (aus executor.py gehoben — jetzt Single-Source) ────────────────
 # Attribut → zuständige (EINDEUTIGE) Domain (set_state/adjust ohne explizites domain-Filter):
 # „stell die Heizung auf 20" darf NUR climate treffen, nicht TVs/Lichter/Lüfter.
-# Die NICHT-Enum-Attrs stehen explizit (Range/pct/Farbe/Safety); die Enum-Listen-Attrs (effect/
-# hvac_mode/swing_mode/fan_mode single-domain) kommen aus der Spec-Tabelle (cap_attrs.SINGLE_DOMAIN,
-# v23.6 Spec-Table-Refactor). Multi-Domain-Enums (`preset` climate/fan, `option` select/input_select)
-# fehlen BEWUSST in ATTR_DOMAIN (kein Single-Narrowing → „Lüfter auf Schlaf" bleibt möglich), sind aber
-# ausführbar via EXECUTABLE_ATTRS (per-Entität geplant, Dispatch splittet nach Domain).
+# Die NICHT-Enum-Attrs stehen explizit (Range/pct/Farbe/Safety/oscillate/direction); die Enum-Listen-Attrs
+# (effect/hvac_mode/swing_mode/fan_mode + Batch1b sound_mode/mode/operation/activity/vacuum_fan_speed,
+# alle single-domain) kommen aus der Spec-Tabelle (cap_attrs.SINGLE_DOMAIN, v23.6). Multi-Domain-Enums
+# (`preset` climate/fan, `option` select/input_select) fehlen BEWUSST in ATTR_DOMAIN (kein Single-Narrowing
+# → „Lüfter auf Schlaf" bleibt möglich), sind aber ausführbar via EXECUTABLE_ATTRS (per-Entität geplant,
+# Dispatch splittet nach Domain). `direction` (Fix-Enum, oscillate-Klasse §10.5) ist explizit → fan.
 _EXPLICIT_NONENUM_DOMAIN = {
     "temperature": "climate", "brightness": "light", "color": "light",
     "color_temp": "light", "volume": "media_player", "position": "cover",
     "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel",
-    "oscillate": "fan", "tilt": "cover"}
+    "oscillate": "fan", "tilt": "cover", "direction": "fan"}
 ATTR_DOMAIN = {**_EXPLICIT_NONENUM_DOMAIN, **cap_attrs.SINGLE_DOMAIN}
 
 # Set-State-Attribute, die der Executor DISPATCHEN kann (Executability-Gate, getrennt von der
@@ -340,6 +341,7 @@ _FEAT_BITS = {
     ("cover", "tilt"): 128,         # CoverEntityFeature.SET_TILT_POSITION
     ("media_player", "volume"): 4,  # MediaPlayerEntityFeature.VOLUME_SET
     ("fan", "oscillate"): 2,        # FanEntityFeature.OSCILLATE
+    ("fan", "direction"): 4,        # FanEntityFeature.DIRECTION (v23.6 Batch1b, oscillate-Klasse)
 }
 _COLOR_CAP_MODES = frozenset({"hs", "rgb", "xy", "rgbw", "rgbww"})
 
@@ -401,17 +403,27 @@ def _num_or(x):
     return _num(float(x)) if isinstance(x, (int, float)) else x
 
 
+def _feat_bit_set(attrs: dict, bit: int) -> bool:
+    """supported_features-Bit gesetzt? (feat_bit-Gate für Over-Claim-Schutz, §10.4)."""
+    sf = attrs.get("supported_features")
+    return isinstance(sf, (int, float)) and bool(int(sf) & bit)
+
+
 def _enum_caps_for(s: dict, domain: str, attrs: dict) -> None:
     """Spec-Tabellen-getriebene Enum-Listen-Caps für die UNIFORMEN Attrs (effect/preset/fan_mode/
-    swing_mode): truthy-Guard + RAW-Order (§6.5-LOCK S1) + omit⇒not_capable. NUR diese vier teilen
-    EIN Verhalten (§10.2); hvac_mode (Key-Präsenz + `_ordered`) und option (truthy + any-Fallback)
-    bleiben eigene Zweige im Aufrufer. Mutiert `s` (caps.settable) in-place.
+    swing_mode + Batch1b sound_mode/mode/operation/activity/vacuum_fan_speed): truthy-Guard + RAW-Order
+    (§6.5-LOCK S1) + omit⇒not_capable. Zusätzlich feat_bit-Gate, wo gesetzt (sound_mode SELECT_SOUND_MODE:
+    Liste OHNE Bit ⇒ nicht fähig, Over-Claim-Schutz wie src). NUR diese teilen EIN Verhalten (§10.2);
+    hvac_mode (Key-Präsenz + `_ordered`) und option (truthy + any-Fallback) bleiben eigene Zweige im
+    Aufrufer. Mutiert `s` (caps.settable) in-place.
     ⚠ Die Insert-Reihenfolge in `s` folgt der Tabellen-Order (≠ ALT-Insert-Order) — das ist INERT:
     kein Konsument iteriert caps.settable roh fürs Result (alle sortieren via `_ATTR_ORDER` oder
     looken-up). Falls je ein roh-iterierender settable-Konsument entsteht, wird das byte-relevant."""
     for r in cap_attrs.ENUM_CAP_ATTRS:
         if r.attr not in cap_attrs.ENUM_CAPS_HELPER_ATTRS or domain not in r.domains:
             continue
+        if r.feat_bit is not None and not _feat_bit_set(attrs, r.feat_bit):
+            continue                                      # bit-gegatet (sound_mode): kein Bit ⇒ nicht fähig
         vals = attrs.get(r.list_key)
         if vals:                                          # None-safe (F1: HA legt Cap-Keys oft mit None an)
             s[r.attr] = Spec("enum", values=tuple(vals))
@@ -455,6 +467,8 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
         _enum_caps_for(s, "fan", attrs)                      # Tabelle: preset (RAW; None-safe F1: SET_SPEED-only trägt None)
         if _feat(attrs, "fan", "oscillate"):
             s["oscillate"] = Spec("enum", values=ONOFF)
+        if _feat(attrs, "fan", "direction"):                 # v23.6 Batch1b: Fix-2-Enum (oscillate-Klasse), bit-gegatet
+            s["direction"] = Spec("enum", values=FAN_DIRECTION)
 
     elif domain == "cover":
         if _feat(attrs, "cover", "position"):
@@ -465,6 +479,7 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
     elif domain == "media_player":
         if _feat(attrs, "media_player", "volume"):
             s["volume"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("volume")
+        _enum_caps_for(s, "media_player", attrs)  # v23.6 Batch1b: sound_mode (SELECT_SOUND_MODE-bit-gegated, truthy-Liste)
 
     elif domain in ("select", "input_select"):   # options RAW-Order (§6.5-LOCK S1: Cap-Haus = Live-Order verbatim)
         s["option"] = Spec("enum", values=tuple(attrs["options"])) if attrs.get("options") else Spec("any")  # None-safe (F1)
@@ -474,6 +489,16 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
 
     elif domain == "humidifier":
         s["humidity"] = _range(attrs, "min_humidity", "max_humidity", None, "%"); adj.add("humidity")
+        _enum_caps_for(s, "humidifier", attrs)   # v23.6 Batch1b: mode (available_modes, truthy+RAW+omit)
+
+    elif domain == "water_heater":               # v23.6 Batch1b: operation (operation_list, truthy+RAW+omit)
+        _enum_caps_for(s, "water_heater", attrs)
+
+    elif domain == "remote":                     # v23.6 Batch1b: activity (activity_list; Setter = remote.turn_on)
+        _enum_caps_for(s, "remote", attrs)
+
+    elif domain == "vacuum":                     # v23.6 Batch1b: vacuum_fan_speed (fan_speed_list, truthy+RAW+omit)
+        _enum_caps_for(s, "vacuum", attrs)
 
     elif domain == "lock":
         s["lock"] = Spec("enum", values=LOCK_STATES)
@@ -488,8 +513,9 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
 def _available_attrs(caps: Caps) -> list:
     """not_capable-`available` = welche Attribute der Assistent DOCH setzen kann. Nur ASSISTANT-
     ausführbare (∩ EXECUTABLE_ATTRS, Benni 2026-07-14): jede angebotene Alternative ist erfüllbar (rev2-
-    Kernwert). v23.6 P3-wire + Batch1a: effect/hvac_mode/preset/oscillate/tilt/swing_mode/fan_mode/option
-    sind jetzt executor-verdrahtet → sie erscheinen als Alternativen. Kanon. Reihenfolge (_ATTR_ORDER)."""
+    Kernwert). v23.6 P3-wire + Batch1a/1b: effect/hvac_mode/preset/oscillate/tilt/swing_mode/fan_mode/
+    option + sound_mode/mode/operation/activity/vacuum_fan_speed/direction sind executor-verdrahtet →
+    sie erscheinen als Alternativen. Kanon. Reihenfolge (_ATTR_ORDER)."""
     avail = [a for a in caps.settable if a in EXECUTABLE_ATTRS]
     return sorted(avail, key=lambda a: (_ATTR_ORDER.index(a) if a in _ATTR_ORDER else 99, a))[:_ALLOWED_TRUNC_N]
 
@@ -951,11 +977,13 @@ _ATTR_DE = {"color": "Farbe", "brightness": "Helligkeit", "color_temp": "Weißto
             "temperature": "Temperatur", "volume": "Lautstärke", "position": "Position",
             "fan_speed": "Geschwindigkeit", "tilt": "Neigung", "oscillate": "Schwenken",
             "humidity": "Luftfeuchte", "value": "Wert", "source": "Quelle",
+            "direction": "Richtung",             # v23.6 Batch1b (oscillate-Klasse, kein Tabellen-Attr)
             **cap_attrs.DE_NOUN}
 _ATTR_NEG_DE = {"color": "keine Farbe", "brightness": "keine Helligkeit", "color_temp": "keinen Weißton",
                 "temperature": "keine Temperatur", "volume": "keine Lautstärke",
                 "position": "keine Position", "fan_speed": "keine Geschwindigkeit",
                 "oscillate": "kein Schwenken", "tilt": "keine Lamellen-Neigung",
+                "direction": "keine Laufrichtung",
                 **cap_attrs.DE_NEG}
 
 
@@ -1092,6 +1120,8 @@ def say_for_call(verb: str, args: dict, r: dict):
             return f"{ent} geöffnet" if val else f"{ent} geschlossen"
         if attr == "oscillate":       # v23.6 P3-wire: ONOFF-canon nicht roh zitieren („auf on gestellt")
             return f"{ent} schwenkt jetzt" if val == "on" else f"{ent} schwenkt nicht mehr"
+        if attr == "direction":       # v23.6 Batch1b: Fix-Enum forward/reverse nicht roh zitieren
+            return f"{ent} läuft jetzt vorwärts" if val == "forward" else f"{ent} läuft jetzt rückwärts"
         if unit == "%":
             return _clamp_suffix(f"{ent} auf {_fmt_num(val)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}",
                                  args, val, r)

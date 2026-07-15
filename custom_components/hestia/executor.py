@@ -177,8 +177,9 @@ async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
         await hass.services.async_call("light", "turn_on",
                                        {"entity_id": eids, "color_temp_kelvin": int(canon)},
                                        blocking=True, context=context)
-    elif attr in cap_attrs.BY_ATTR:  # Spec-Tabelle: effect/hvac_mode/preset/swing_mode/fan_mode/option
-        # (disjunkt zu den expliziten pct/color/oscillate/tilt/lock/alarm-Zweigen davor/danach —
+    elif attr in cap_attrs.BY_ATTR:  # Spec-Tabelle: effect/hvac_mode/preset/swing_mode/fan_mode/option +
+        # Batch1b sound_mode/mode/operation/activity/vacuum_fan_speed (alle über service=(dom,svc,param)):
+        # (disjunkt zu den expliziten pct/color/oscillate/direction/tilt/lock/alarm-Zweigen davor/danach —
         # eindeutige attr-Namen, kein Overlap). EIN generischer Enum-Dispatch über service=(ha_domain,
         # svc, param). `canon` ist geräte-echt
         # Enum-gated (plan_group_set_state). Single-Domain → direkt; Multi-Domain (preset climate/fan,
@@ -197,6 +198,10 @@ async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
     elif attr == "oscillate":      # v23.6 P3-wire: canon ∈ {on,off} (ONOFF-Enum)
         await hass.services.async_call("fan", "oscillate",
                                        {"entity_id": eids, "oscillating": canon == "on"},
+                                       blocking=True, context=context)
+    elif attr == "direction":      # v23.6 Batch1b: canon ∈ {forward,reverse} (oscillate-Klasse, kein Tabellen-Attr)
+        await hass.services.async_call("fan", "set_direction",
+                                       {"entity_id": eids, "direction": canon},
                                        blocking=True, context=context)
     elif attr == "tilt":           # v23.6 P3-wire: Lamellen-Position. DIREKT (kein Limit-Mapping —
         await hass.services.async_call("cover", "set_cover_tilt_position",   # `limit` gilt für position,

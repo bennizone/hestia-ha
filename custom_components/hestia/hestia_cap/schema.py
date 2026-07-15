@@ -13,7 +13,7 @@ from __future__ import annotations
 
 # Fixe Wort-Enums leben jetzt im Blatt-Modul cap_attrs (Import-Layering §10.3); hier re-exportiert
 # → result.py-Importe (`from .schema import … HVAC_MODES …`) bleiben byte-neutral.
-from .cap_attrs import HVAC_MODES, PRESETS, LOCK_STATES, ALARM_STATES, ONOFF
+from .cap_attrs import HVAC_MODES, PRESETS, LOCK_STATES, ALARM_STATES, ONOFF, FAN_DIRECTION
 
 CAP_VERSION = "cap-v2"
 
@@ -40,7 +40,7 @@ TARGET_PARAMS = {
 #   number     : Zahl (z.B. Grad, Helfer-Wert)
 #   colorword  : Farbwort-Enum
 #   colortemp  : "warm" | "cool" | Kelvin-Zahl
-#   words      : geschlossenes Wort-Enum (values-Tupel) — hvac_mode/preset/lock/alarm/oscillate
+#   words      : geschlossenes Wort-Enum (values-Tupel) — hvac_mode/preset/lock/alarm/oscillate/direction
 #   str        : freier String (Effektname, Select-Option) — gerätespezifisch, nicht enumerierbar
 # Universal-Setter (grain-nativ): Fähigkeit skaliert über Attribut-Enum, NICHT über neue Verben.
 SETTABLE_ATTRS = {
@@ -63,6 +63,14 @@ SETTABLE_ATTRS = {
     "option":     {"kind": "str"},   # select/input_select-Option (freier Name)
     "swing_mode": {"kind": "str"},   # climate Schwenk-Modus (geräte-echte swing_modes, caps-gated wie effect)
     "fan_mode":   {"kind": "str"},   # climate Lüfter-Modus (geräte-echte fan_modes, caps-gated wie effect)
+    # ── v23.6 Batch1b (§10.5): Growth-Domain-Enum-Attribute (freie geräte-echte Liste, caps-gated wie effect) ──
+    "sound_mode": {"kind": "str"},   # media_player Klangprofil (sound_mode_list, SELECT_SOUND_MODE-Bit-gegated)
+    "mode":       {"kind": "str"},   # humidifier Modus (available_modes)
+    "operation":  {"kind": "str"},   # water_heater Betriebsart (operation_list)
+    "activity":   {"kind": "str"},   # remote Aktivität (activity_list, Setter = remote.turn_on)
+    "vacuum_fan_speed": {"kind": "str"},  # vacuum Saugstufe (fan_speed_list; eigener Name vs. fan-pct fan_speed)
+    # fan.direction = Fix-2-Enum (oscillate-Klasse, §10.5): geschlossenes Wort-Enum, bit-gegated (DIRECTION)
+    "direction":  {"kind": "words", "values": FAN_DIRECTION},
 }
 ADJUSTABLE_ATTRS = ("brightness", "volume", "temperature", "position", "fan_speed", "color_temp")
 # GET_ATTRS = Kern-Enum (breit, aber nicht Riesen-Enum). Feinere Discovery via `help`-Verb (Phase 3).
