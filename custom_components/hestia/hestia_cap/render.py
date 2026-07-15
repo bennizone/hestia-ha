@@ -10,10 +10,11 @@ statisch (via tooldefs), volatiler Schwanz (User-Turn) zuletzt. **Zeit NICHT hie
 Floor-Mapping vorliegt, sonst flach.
 """
 from __future__ import annotations
+from .captag import cap_tag
 from .house import House
 from .tooldefs import all_tool_defs
 
-RENDER_VERSION = "r3"  # r3 = per-Entity Aliase („auch: …") + Beschreibungen; r2 = HA-native hierarchisch
+RENDER_VERSION = "r4"  # r4 = Cap-Tags im [domain]-Token (v23.6 P1, captag.py); r3 = Aliase+Beschreibung; r2 = HA-native
 
 INSTRUCTIONS = (
     "Du bist Hestia, der Sprachassistent für dieses Smart Home. Wandle die Nutzer-Anfrage in eine "
@@ -26,9 +27,9 @@ INSTRUCTIONS = (
 
 
 def _entity_token(e) -> str:
-    """Ein Gerät im Haus-Block. r3: Aliase („auch: …") + Beschreibung per Entität — damit das Modell
-    Alias-/vage Queries auf den kanonischen Namen abbildet. Ohne Extras byte-identisch zu r2."""
-    tok = f"{e.name}[{e.domain}]"
+    """Ein Gerät im Haus-Block. r4: Cap-Tag im `[domain…]`-Token (captag.py) — Fähigkeiten fürs Modell.
+    r3: Aliase („auch: …") + Beschreibung. Ohne Attribute+Extras byte-identisch zu r3 (leerer Tag)."""
+    tok = f"{e.name}[{e.domain}{cap_tag(e.domain, getattr(e, 'attributes', None))}]"
     if e.aliases:
         tok += " (auch: " + ", ".join(e.aliases) + ")"
     if getattr(e, "description", ""):

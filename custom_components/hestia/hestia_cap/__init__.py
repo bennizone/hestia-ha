@@ -12,6 +12,7 @@ from .serialize import dumps, serialize_call
 from .house import House, Area, Entity
 from .render import (RENDER_VERSION, INSTRUCTIONS, render_house,
                      render_system_content, build_messages)
+from .captag import cap_tag, CAP_TAG_X
 from .chat_template import render_prompt, render_live_context, BOS_TOKEN, STOP
 from . import result
 from .result import (StateProvider, resolve, exposure_from_house, states_from_house,
@@ -23,6 +24,7 @@ __all__ = ["CAP_VERSION", "VERBS", "TOOL_CALL_START", "TOOL_CALL_END",
            "parse", "Call", "ParseResult", "dumps", "serialize_call",
            "House", "Area", "Entity", "RENDER_VERSION", "INSTRUCTIONS",
            "render_house", "render_system_content", "build_messages",
+           "cap_tag", "CAP_TAG_X",
            "render_prompt", "render_live_context", "BOS_TOKEN", "STOP",
            "result", "StateProvider", "resolve", "exposure_from_house", "states_from_house",
            "capabilities_of", "plan_set_state", "plan_group_set_state", "shape_partial",
