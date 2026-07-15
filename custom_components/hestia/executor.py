@@ -25,6 +25,7 @@ from homeassistant.core import HomeAssistant, Context
 from homeassistant.helpers import intent
 
 from . import mapping
+from .hestia_cap import cap_attrs
 from .hestia_cap import result as R
 
 _LOGGER = logging.getLogger(__name__)
@@ -176,25 +177,23 @@ async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
         await hass.services.async_call("light", "turn_on",
                                        {"entity_id": eids, "color_temp_kelvin": int(canon)},
                                        blocking=True, context=context)
-    elif attr == "effect":         # v23.6 P3-wire: Licht-Effekt (canon ∈ effect_list, Enum-gated)
-        await hass.services.async_call("light", "turn_on",
-                                       {"entity_id": eids, "effect": canon},
-                                       blocking=True, context=context)
-    elif attr == "hvac_mode":      # v23.6 P3-wire: Betriebsmodus (canon ∈ hvac_modes, Enum-gated)
-        await hass.services.async_call("climate", "set_hvac_mode",
-                                       {"entity_id": eids, "hvac_mode": canon},
-                                       blocking=True, context=context)
-    elif attr == "preset":         # v23.6 P3-wire: mehrdeutig → nach Domain splitten (climate vs fan)
-        cl = [e for e in eids if exposure[e]["domain"] == "climate"]
-        fn = [e for e in eids if exposure[e]["domain"] == "fan"]
-        if cl:
-            await hass.services.async_call("climate", "set_preset_mode",
-                                           {"entity_id": cl, "preset_mode": canon},
+    elif attr in cap_attrs.BY_ATTR:  # Spec-Tabelle: effect/hvac_mode/preset/swing_mode/fan_mode/option
+        # (disjunkt zu den expliziten pct/color/oscillate/tilt/lock/alarm-Zweigen davor/danach —
+        # eindeutige attr-Namen, kein Overlap). EIN generischer Enum-Dispatch über service=(ha_domain,
+        # svc, param). `canon` ist geräte-echt
+        # Enum-gated (plan_group_set_state). Single-Domain → direkt; Multi-Domain (preset climate/fan,
+        # option select/input_select) → Split über `domains` in FESTER Order (climate→fan / select→input_select).
+        row = cap_attrs.BY_ATTR[attr]
+        _ha_dom, svc, param = row.service
+        if len(row.domains) == 1:
+            await hass.services.async_call(_ha_dom, svc, {"entity_id": eids, param: canon},
                                            blocking=True, context=context)
-        if fn:
-            await hass.services.async_call("fan", "set_preset_mode",
-                                           {"entity_id": fn, "preset_mode": canon},
-                                           blocking=True, context=context)
+        else:
+            for d in row.domains:
+                de = [e for e in eids if exposure[e]["domain"] == d]
+                if de:
+                    await hass.services.async_call(d, svc, {"entity_id": de, param: canon},
+                                                   blocking=True, context=context)
     elif attr == "oscillate":      # v23.6 P3-wire: canon ∈ {on,off} (ONOFF-Enum)
         await hass.services.async_call("fan", "oscillate",
                                        {"entity_id": eids, "oscillating": canon == "on"},
@@ -203,21 +202,6 @@ async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
         await hass.services.async_call("cover", "set_cover_tilt_position",   # `limit` gilt für position,
                                        {"entity_id": eids, "tilt_position": int(canon)},  # nicht die Tilt-Achse)
                                        blocking=True, context=context)
-    elif attr == "swing_mode":     # v23.6 Batch1a: canon ∈ swing_modes (Enum-gated)
-        await hass.services.async_call("climate", "set_swing_mode",
-                                       {"entity_id": eids, "swing_mode": canon},
-                                       blocking=True, context=context)
-    elif attr == "fan_mode":       # v23.6 Batch1a: climate-Lüftermodus, canon ∈ fan_modes (Enum-gated)
-        await hass.services.async_call("climate", "set_fan_mode",
-                                       {"entity_id": eids, "fan_mode": canon},
-                                       blocking=True, context=context)
-    elif attr == "option":         # v23.6 Batch1a: mehrdeutig → nach Domain splitten (select vs input_select)
-        for d in ("select", "input_select"):
-            de = [e for e in eids if exposure[e]["domain"] == d]
-            if de:
-                await hass.services.async_call(d, "select_option",
-                                               {"entity_id": de, "option": canon},
-                                               blocking=True, context=context)
     elif attr == "lock":            # Safety — nur erreichbar wenn unsafe_mode lock aus deny nahm
         await hass.services.async_call("lock", "lock" if canon == "locked" else "unlock",
                                        {"entity_id": eids}, blocking=True, context=context)

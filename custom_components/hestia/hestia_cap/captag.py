@@ -43,11 +43,26 @@ from __future__ import annotations
 
 import re
 
+from . import cap_attrs
 from .result import capabilities_of
 
 CAP_TAG_X = 8   # Inline-Schwelle GELOCKT (2026-07-15, X-Sweep): len(werte)≤8 → inline, >8 → labelN
 _SELECT_SOURCE = 2048   # MediaPlayerEntityFeature.SELECT_SOURCE (D1-Gate für src)
 _STRUCT = re.compile(r"[/·:\[\]\r\n\t]+")   # Tag-Struktur-Zeichen (D7)
+
+# Advertiser-Paare (tag_label, list_key) aus der Spec-Tabelle — Single-Source (Byte-identisch zu den
+# alten Literalen). Der Domain-Block bleibt HAND-strukturiert (Byte-Order = Position der _adv-Aufrufe
+# hier, §10.2), aber die Label→list_key-Zuordnung kommt aus cap_attrs → Batch-1b-Advertiser = eine
+# Tabellen-Zeile. Nur Zeilen MIT tag_label (Filter): hvac_mode (tag_label="") + src (kein Settable)
+# werden hand-gerendert → ein versehentliches _adv(a,"hvac_mode") knallt als KeyError statt still
+# einen kaputten Tag zu rendern.
+_ADV_PAIRS = {r.attr: (r.tag_label, r.list_key) for r in cap_attrs.ENUM_CAP_ATTRS if r.tag_label}
+
+
+def _adv(a: dict, attr: str, x: int) -> str | None:
+    """`label:v1/v2/…` (≤x) bzw. `labelN` für ein tabellen-getriebenes Advertiser-Attribut."""
+    label, list_key = _ADV_PAIRS[attr]
+    return _lst(label, a.get(list_key), x)
 
 
 def _san(s) -> str:
@@ -88,7 +103,7 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
             parts.append("on/off")                                 # onoff-only (keine Helligkeit)
         else:
             parts.append("rgb+ct" if (col and ct) else "rgb" if col else "ct" if ct else "dim")
-        fx = _lst("fx", a.get("effect_list"), x)                   # Advertiser (RAW-Order, D2/D7)
+        fx = _adv(a, "effect", x)                                  # Advertiser aus Tabelle (RAW-Order, D2/D7)
         if fx:
             parts.append(fx)
 
@@ -102,18 +117,18 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
         t = s.get("temperature")
         if t is not None and t.kind == "range" and t.lo is not None and t.hi is not None:
             parts.append(f"{_g(t.lo)}-{_g(t.hi)}")                 # beide Enden nötig (kein '16-None')
-        pre = _lst("pre", a.get("preset_modes"), x)                # Advertiser (RAW-Order, D2/D7)
+        pre = _adv(a, "preset", x)                                 # Advertiser aus Tabelle (RAW-Order, D2/D7)
         if pre:
             parts.append(pre)
-        fm = _lst("fan", a.get("fan_modes"), x)                    # v23.6 Batch1a: climate-Lüftermodus (≠ fan-Domain)
+        fm = _adv(a, "fan_mode", x)                                # v23.6 Batch1a: climate-Lüftermodus (≠ fan-Domain)
         if fm:
             parts.append(fm)
-        sw = _lst("swing", a.get("swing_modes"), x)                # v23.6 Batch1a: Schwenk-Modus
+        sw = _adv(a, "swing_mode", x)                              # v23.6 Batch1a: Schwenk-Modus
         if sw:
             parts.append(sw)
 
     elif domain == "fan":
-        pre = _lst("pre", a.get("preset_modes"), x)                # D5: fan_speed nicht rendern
+        pre = _adv(a, "preset", x)                                 # D5: fan_speed nicht rendern
         if pre:
             parts.append(pre)
         if "oscillate" in s:                                       # bit-gegated in caps
@@ -135,7 +150,7 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
             parts.append("tilt")
 
     elif domain in ("select", "input_select"):                     # v23.6 Batch1a: options-Enum (G1)
-        opt = _lst("opt", a.get("options"), x)                     # Advertiser (RAW-Order, D2/D7); bimodal wie fx
+        opt = _adv(a, "option", x)                                  # Advertiser aus Tabelle (RAW-Order, D2/D7); bimodal wie fx
         if opt:
             parts.append(opt)
 

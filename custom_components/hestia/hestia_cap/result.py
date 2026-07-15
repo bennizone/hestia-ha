@@ -22,26 +22,29 @@ from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Protocol, runtime_checkable
 
+from . import cap_attrs
 from .schema import (ADJUSTABLE_ATTRS, ALARM_STATES, COLOR_SYNONYMS, COLOR_WORDS,
                      HVAC_MODES, LOCK_STATES, ONOFF, SETTABLE_ATTRS)
 
 # ── Konstanten (aus executor.py gehoben — jetzt Single-Source) ────────────────
 # Attribut → zuständige (EINDEUTIGE) Domain (set_state/adjust ohne explizites domain-Filter):
 # „stell die Heizung auf 20" darf NUR climate treffen, nicht TVs/Lichter/Lüfter.
-# v23.6 P3-wire (2026-07-15): effect/hvac_mode/oscillate/tilt ergänzt — der Cap-Tag bewirbt sie ALLE
-# (fx/hvac-Modi/osc/tilt) → jetzt auch executor-verdrahtet (advertised⊆executable, Benni-GO). `preset`
-# fehlt BEWUSST: mehrdeutig (climate UND fan) → kein Single-Domain-Narrowing (sonst bricht „Lüfter auf
-# Schlaf"), aber ausführbar via EXECUTABLE_ATTRS (per-Entität geplant, Dispatch splittet nach Domain).
-ATTR_DOMAIN = {"temperature": "climate", "brightness": "light", "color": "light",
-               "color_temp": "light", "volume": "media_player", "position": "cover",
-               "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel",
-               "effect": "light", "hvac_mode": "climate", "oscillate": "fan", "tilt": "cover",
-               "swing_mode": "climate", "fan_mode": "climate"}   # v23.6 Batch1a: single-domain climate-Enums
+# Die NICHT-Enum-Attrs stehen explizit (Range/pct/Farbe/Safety); die Enum-Listen-Attrs (effect/
+# hvac_mode/swing_mode/fan_mode single-domain) kommen aus der Spec-Tabelle (cap_attrs.SINGLE_DOMAIN,
+# v23.6 Spec-Table-Refactor). Multi-Domain-Enums (`preset` climate/fan, `option` select/input_select)
+# fehlen BEWUSST in ATTR_DOMAIN (kein Single-Narrowing → „Lüfter auf Schlaf" bleibt möglich), sind aber
+# ausführbar via EXECUTABLE_ATTRS (per-Entität geplant, Dispatch splittet nach Domain).
+_EXPLICIT_NONENUM_DOMAIN = {
+    "temperature": "climate", "brightness": "light", "color": "light",
+    "color_temp": "light", "volume": "media_player", "position": "cover",
+    "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel",
+    "oscillate": "fan", "tilt": "cover"}
+ATTR_DOMAIN = {**_EXPLICIT_NONENUM_DOMAIN, **cap_attrs.SINGLE_DOMAIN}
 
 # Set-State-Attribute, die der Executor DISPATCHEN kann (Executability-Gate, getrennt von der
-# Narrowing-Map ATTR_DOMAIN): alle eindeutigen + Multi-Domain-Attribute, die per Entität geplant/
-# nach Domain gesplittet werden: `preset` (climate/fan) + `option` (select/input_select, v23.6 Batch1a).
-EXECUTABLE_ATTRS = frozenset(ATTR_DOMAIN) | {"preset", "option"}
+# Narrowing-Map ATTR_DOMAIN): alle eindeutigen + die Multi-Domain-Enum-Attrs aus der Tabelle
+# (`preset`, `option`), die per Entität geplant/nach Domain gesplittet werden.
+EXECUTABLE_ATTRS = frozenset(ATTR_DOMAIN) | cap_attrs.MULTI_DOMAIN_ATTRS
 
 # amount-Enum → Schrittweite (pct-Verben) bzw. Grad-Delta (temperature)
 STEP_PCT = {"a_little": 10, "some": 25, "a_lot": 50}
@@ -398,6 +401,22 @@ def _num_or(x):
     return _num(float(x)) if isinstance(x, (int, float)) else x
 
 
+def _enum_caps_for(s: dict, domain: str, attrs: dict) -> None:
+    """Spec-Tabellen-getriebene Enum-Listen-Caps für die UNIFORMEN Attrs (effect/preset/fan_mode/
+    swing_mode): truthy-Guard + RAW-Order (§6.5-LOCK S1) + omit⇒not_capable. NUR diese vier teilen
+    EIN Verhalten (§10.2); hvac_mode (Key-Präsenz + `_ordered`) und option (truthy + any-Fallback)
+    bleiben eigene Zweige im Aufrufer. Mutiert `s` (caps.settable) in-place.
+    ⚠ Die Insert-Reihenfolge in `s` folgt der Tabellen-Order (≠ ALT-Insert-Order) — das ist INERT:
+    kein Konsument iteriert caps.settable roh fürs Result (alle sortieren via `_ATTR_ORDER` oder
+    looken-up). Falls je ein roh-iterierender settable-Konsument entsteht, wird das byte-relevant."""
+    for r in cap_attrs.ENUM_CAP_ATTRS:
+        if r.attr not in cap_attrs.ENUM_CAPS_HELPER_ATTRS or domain not in r.domains:
+            continue
+        vals = attrs.get(r.list_key)
+        if vals:                                          # None-safe (F1: HA legt Cap-Keys oft mit None an)
+            s[r.attr] = Spec("enum", values=tuple(vals))
+
+
 def capabilities_of(domain: str, state_like: dict) -> Caps:
     """(domain, {"state","attributes"}) → Caps. Geteilt train==serve. Liest NUR Attribute (§1-Quelle
     je Attribut); absente Capability-Introspektion ⇒ konservativ (kind='any'), nie über-ablehnen."""
@@ -407,16 +426,11 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
 
     if domain == "climate":
         s["temperature"] = _range(attrs, "min_temp", "max_temp", "target_temp_step", "°C"); adj.add("temperature")
-        if "hvac_modes" in attrs:
+        if "hvac_modes" in attrs:                         # EXPLIZIT (§10.2): Key-Präsenz + kanonisch `_ordered`
             s["hvac_mode"] = Spec("enum", values=_ordered(attrs["hvac_modes"], HVAC_MODES))
         else:
             s["hvac_mode"] = Spec("any")
-        if attrs.get("preset_modes"):                     # truthy: HA legt Cap-Keys oft mit Wert None an (F1)
-            s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))
-        if attrs.get("swing_modes"):                      # v23.6 Batch1a: RAW-Order (§6.5-LOCK S1); None-safe (F1)
-            s["swing_mode"] = Spec("enum", values=tuple(attrs["swing_modes"]))
-        if attrs.get("fan_modes"):                        # v23.6 Batch1a: climate-Lüftermodus (≠ fan-Domain fan_speed)
-            s["fan_mode"] = Spec("enum", values=tuple(attrs["fan_modes"]))
+        _enum_caps_for(s, "climate", attrs)               # Tabelle: preset/fan_mode/swing_mode (truthy+RAW+omit)
 
     elif domain in ("light",):
         modes = attrs.get("supported_color_modes")
@@ -431,17 +445,14 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
             s["color_temp"] = Spec("any")
         elif "color_temp" in modes:
             s["color_temp"] = _range(attrs, "min_color_temp_kelvin", "max_color_temp_kelvin", None, "K"); adj.add("color_temp")
-        el = attrs.get("effect_list")
-        if el:
-            s["effect"] = Spec("enum", values=tuple(el))    # RAW-Order (§6.5-LOCK S1) — WLED-180 → Truncation im Result
+        _enum_caps_for(s, "light", attrs)                   # Tabelle: effect (RAW-Order §6.5-LOCK S1 — WLED-180 → Trunc im Result)
 
     elif domain == "fan":
         # §2-Fallback 0–100 unbedingt (auch ohne SET_SPEED-Bit) — bewusste Design-Entscheidung:
         # beide Seiten claimen es gleich (kein Paritätsproblem), aber preset-only-Fans ohne SET_SPEED
         # täuschen Erfolg vor (accept-and-ignore, §6.9-Q9-Klasse) → am P2-Gate ggf. per Bit gaten.
         s["fan_speed"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("fan_speed")
-        if attrs.get("preset_modes"):                        # gerätespez. Liste → RAW-Order (§6.5-LOCK S1); None-safe (F1:
-            s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))   # SET_SPEED-only-Fan trägt preset_modes=None)
+        _enum_caps_for(s, "fan", attrs)                      # Tabelle: preset (RAW; None-safe F1: SET_SPEED-only trägt None)
         if _feat(attrs, "fan", "oscillate"):
             s["oscillate"] = Spec("enum", values=ONOFF)
 
@@ -933,20 +944,19 @@ def _say_entity(targets: list, args: dict):
 # ── v23.5 Phase 4 — say-Render der dyn. Executor-Effekte (§6.3, geteilt train==serve) ──
 # Attribut → deutsches Nomen (für not_capable-`available` + not_capable-Verneinung). KANONISCH
 # hier (eine Stelle, §6.5-Zahl-/Wort-Lokalisierung), NICHT in 30 Templates.
+# Nicht-Enum-Attrs explizit; die Enum-Listen-Attrs (effect/hvac_mode/preset/fan_mode/swing_mode/
+# option) kommen aus der Spec-Tabelle (cap_attrs.DE_NOUN/DE_NEG — Genus dort gepflegt). Merge ist
+# order-frei (reine Lookup-Map).
 _ATTR_DE = {"color": "Farbe", "brightness": "Helligkeit", "color_temp": "Weißton",
             "temperature": "Temperatur", "volume": "Lautstärke", "position": "Position",
-            "fan_speed": "Geschwindigkeit", "hvac_mode": "Modus", "preset": "Voreinstellung",
-            "effect": "Effekt", "option": "Einstellung", "tilt": "Neigung", "oscillate": "Schwenken",
-            "swing_mode": "Schwenkmodus", "fan_mode": "Lüftermodus",   # v23.6 Batch1a
-            "humidity": "Luftfeuchte", "value": "Wert", "source": "Quelle"}
+            "fan_speed": "Geschwindigkeit", "tilt": "Neigung", "oscillate": "Schwenken",
+            "humidity": "Luftfeuchte", "value": "Wert", "source": "Quelle",
+            **cap_attrs.DE_NOUN}
 _ATTR_NEG_DE = {"color": "keine Farbe", "brightness": "keine Helligkeit", "color_temp": "keinen Weißton",
                 "temperature": "keine Temperatur", "volume": "keine Lautstärke",
                 "position": "keine Position", "fan_speed": "keine Geschwindigkeit",
-                # v23.6 P3-wire: neue verdrahtete Attrs (korrektes Genus)
-                "effect": "keinen Effekt", "hvac_mode": "keinen Betriebsmodus", "preset": "kein Programm",
                 "oscillate": "kein Schwenken", "tilt": "keine Lamellen-Neigung",
-                # v23.6 Batch1a: option=Einstellung (fem!), swing/fan_mode (masc)
-                "option": "keine Einstellung", "swing_mode": "keinen Schwenkmodus", "fan_mode": "keinen Lüftermodus"}
+                **cap_attrs.DE_NEG}
 
 
 def _join_de(items) -> str:

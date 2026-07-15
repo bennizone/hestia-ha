@@ -11,6 +11,10 @@ Freeze mehr, Benni 2026-07-08); Änderungen bewusst + dokumentiert.
 """
 from __future__ import annotations
 
+# Fixe Wort-Enums leben jetzt im Blatt-Modul cap_attrs (Import-Layering §10.3); hier re-exportiert
+# → result.py-Importe (`from .schema import … HVAC_MODES …`) bleiben byte-neutral.
+from .cap_attrs import HVAC_MODES, PRESETS, LOCK_STATES, ALARM_STATES, ONOFF
+
 CAP_VERSION = "cap-v2"
 
 # ── Wire-Wrapper (LFM-nativ, empirisch A2) ────────────────────────────────
@@ -27,12 +31,8 @@ TARGET_PARAMS = {
     "domain": {"type": "str"},   # light|switch|climate|cover|fan|lock|media_player|sensor|...
 }
 
-# ── Wort-Enums für set_state-Attribute (Vollständigkeit via Attribut-Enum, Benni 2026-07-09) ──
-HVAC_MODES = ("heat", "cool", "auto", "off", "dry", "fan_only")
-PRESETS = ("eco", "boost", "away", "comfort", "home", "sleep")     # climate preset_mode (Executor Postel-vergebend)
-LOCK_STATES = ("locked", "unlocked")                              # + Safety-Gate (Zwei-Turn-Confirm)
-ALARM_STATES = ("armed_home", "armed_away", "armed_night", "disarmed")  # + Safety-Gate
-ONOFF = ("on", "off")                                            # oscillate/boolesche Attribute
+# ── Wort-Enums für set_state-Attribute — HVAC_MODES/PRESETS/LOCK_STATES/ALARM_STATES/ONOFF ──
+# (definiert in cap_attrs.py, oben re-exportiert; Vollständigkeit via Attribut-Enum, Benni 2026-07-09)
 
 # ── Attribute + Wert-Domänen ──────────────────────────────────────────────
 # kind steuert Wert-Grammatik (GBNF) + Parser-Validierung + Executor-Mapping.
