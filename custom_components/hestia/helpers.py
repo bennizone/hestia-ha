@@ -13,6 +13,7 @@ auf (Helfer-Anlegen und Exposure bleiben entkoppelt/komponierbar).
 from __future__ import annotations
 
 import asyncio
+import re
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -78,6 +79,23 @@ def entity_of_entry(hass: HomeAssistant, entry_id: str) -> str | None:
         if e.config_entry_id == entry_id:
             return e.entity_id
     return None
+
+
+# State-Template einer Brücke → (source_eid, attribut) rückwärts lesen. Muss zum in
+# `_create_template_bridge` geschriebenen `{{ state_attr('<eid>', '<attr>') }}` passen.
+_STATE_ATTR_RE = re.compile(
+    r"state_attr\(\s*['\"]([^'\"]+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)")
+
+
+def _bridge_source_key(hass: HomeAssistant, bridge_id: str) -> str | None:
+    """`<source_eid>::<attribut>` einer Template-Brücke aus ihrem State-Template rekonstruieren
+    (für Edit-Vorbefüllung + Reuse beim Update), oder None wenn nicht auflösbar."""
+    entry = hass.config_entries.async_get_entry(bridge_id)
+    if entry is None:
+        return None
+    tmpl = (entry.options or {}).get("state") or (entry.data or {}).get("state") or ""
+    m = _STATE_ATTR_RE.search(tmpl)
+    return f"{m.group(1)}::{m.group(2)}" if m else None
 
 
 async def _await_entity(hass: HomeAssistant, entry_id: str) -> str | None:
@@ -194,16 +212,48 @@ async def async_create(hass: HomeAssistant, kind: str, name: str, entities: list
             "name": entry.title, "kind": kind}
 
 
+def _helper_row(hass: HomeAssistant, entry, deps: dict[str, list[str]], reg) -> dict:
+    """Config-Entry → Panel-Zeile inkl. editierbarer Felder (kind/agg/mode/sources/area_id).
+    Brücken-Entitäten werden für die Anzeige zurück auf "<source_eid>::<attr>" abgebildet, damit
+    der Edit-Dialog die virtuelle Quelle zeigt (nicht die interne Template-Brücke)."""
+    reg_ent = next((e for e in reg.entities.values() if e.config_entry_id == entry.entry_id), None)
+    opts = {**(entry.data or {}), **(entry.options or {})}
+    bmap = {}                                   # Brücken-entity_id → "<source_eid>::<attr>"
+    for b in deps.get(entry.entry_id, []):
+        beid = entity_of_entry(hass, b)
+        key = _bridge_source_key(hass, b)
+        if beid and key:
+            bmap[beid] = key
+    if entry.domain == "min_max":
+        raw = list(opts.get("entity_ids") or [])
+        agg = opts.get("type", "mean")
+        kind, agg, mode = "numeric", (agg if agg in NUMERIC_AGG else "mean"), "any"
+    else:                                       # group (binär)
+        raw = list(opts.get("entities") or [])
+        kind, agg, mode = "binary", "mean", ("all" if opts.get("all") else "any")
+    return {
+        "entry_id": entry.entry_id,
+        "entity_id": reg_ent.entity_id if reg_ent else None,
+        "name": entry.title,
+        "domain": entry.domain,
+        "kind": kind,
+        "agg": agg,
+        "mode": mode,
+        "sources": [bmap.get(x, x) for x in raw],
+        "area_id": reg_ent.area_id if reg_ent else None,
+    }
+
+
 async def list_helpers(hass: HomeAssistant) -> list[dict]:
     """NUR von Hestia angelegte Helfer (min_max/group) → Panel-Zeilen. Fremde HA-Helfer, die der
     Nutzer selbst angelegt hat, bleiben unsichtbar (Ownership-Filter) und damit unantastbar."""
-    owned = await owned_ids(hass)
+    owned, deps = await _own_load(hass)
+    reg = er.async_get(hass)
     out = []
     for entry in hass.config_entries.async_entries():
         if entry.domain not in HELPER_DOMAINS or entry.entry_id not in owned:
             continue
-        out.append({"entry_id": entry.entry_id, "entity_id": entity_of_entry(hass, entry.entry_id),
-                    "name": entry.title, "domain": entry.domain})
+        out.append(_helper_row(hass, entry, deps, reg))
     return out
 
 
@@ -223,3 +273,84 @@ async def async_delete(hass: HomeAssistant, entry_id: str) -> None:
                 pass
             ids.discard(b)
     await _own_save(hass, ids, deps)
+
+
+async def async_update(hass: HomeAssistant, entry_id: str, *, name: str, entities: list[str],
+                       agg: str = "mean", mode: str = "any") -> dict:
+    """Bestehenden Helfer editieren — NUR wenn Hestia ihn angelegt hat (Ownership wie async_delete).
+
+    Reconciled die virtuellen climate-Attribut-Brücken: neue "<eid>::<attr>"-Quellen bekommen eine
+    Brücke, weggefallene werden entfernt, unveränderte wiederverwendet (kein entity_id-Churn). Danach
+    die min_max/group-Optionen neu schreiben + reloaden. → {entry_id, entity_id, name, kind}."""
+    ids, deps = await _own_load(hass)
+    if entry_id not in ids:
+        raise PermissionError("Helfer wurde nicht von Hestia angelegt — Bearbeiten verweigert.")
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain not in HELPER_DOMAINS:
+        raise ValueError("Kein editierbarer Hestia-Helfer.")
+
+    old_bridges = list(deps.get(entry_id, []))
+    reuse: dict[str, tuple[str, str | None]] = {}    # "<eid>::<attr>" → (bridge_entry_id, bridge_entity_id)
+    for b in old_bridges:
+        key = _bridge_source_key(hass, b)
+        if key:
+            reuse[key] = (b, entity_of_entry(hass, b))
+
+    new_bridges: list[str] = []      # frisch angelegt → Rollback bei Fehler
+    kept_bridges: list[str] = []     # nach dem Update bestehende Brücken (wiederverwendet + neu)
+    resolved: list[str] = []
+    try:
+        for e in entities:
+            src_eid, sep, attr = e.partition("::")
+            if not sep:
+                resolved.append(e)
+                continue
+            hit = reuse.get(e)
+            if hit and hit[1]:                       # Brücke existiert + hat Entität → wiederverwenden
+                kept_bridges.append(hit[0])
+                resolved.append(hit[1])
+            else:
+                b_entry, b_eid = await _create_template_bridge(hass, src_eid, attr)
+                new_bridges.append(b_entry)
+                kept_bridges.append(b_entry)
+                resolved.append(b_eid)
+    except Exception:
+        for b in new_bridges:   # Teil-Anlage zurückrollen → keine verwaisten Brücken
+            try:
+                await hass.config_entries.async_remove(b)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+
+    opts = dict(entry.options or {})     # integration-interne Keys (group_type/round_digits) erhalten
+    if entry.domain == "min_max":
+        opts.update({"entity_ids": resolved, "type": agg if agg in NUMERIC_AGG else "mean",
+                     "round_digits": opts.get("round_digits", 1)})
+    else:                                 # group (binär)
+        opts.update({"entities": resolved, "all": (mode == "all"), "hide_members": False})
+    try:
+        hass.config_entries.async_update_entry(entry, title=name, options=opts)
+        await hass.config_entries.async_reload(entry_id)
+    except Exception:
+        for b in new_bridges:   # Update scheiterte → schon angelegte Brücken zurückrollen
+            try:
+                await hass.config_entries.async_remove(b)
+            except Exception:  # noqa: BLE001
+                pass
+        raise
+
+    for b in old_bridges:                 # nicht wiederverwendete Brücken sind jetzt verwaist
+        if b not in kept_bridges:
+            try:
+                await hass.config_entries.async_remove(b)
+            except Exception:  # noqa: BLE001
+                pass
+            ids.discard(b)
+    ids.update(new_bridges)
+    if kept_bridges:
+        deps[entry_id] = sorted(kept_bridges)
+    else:
+        deps.pop(entry_id, None)
+    await _own_save(hass, ids, deps)
+    return {"entry_id": entry_id, "entity_id": entity_of_entry(hass, entry_id),
+            "name": name, "kind": "numeric" if entry.domain == "min_max" else "binary"}

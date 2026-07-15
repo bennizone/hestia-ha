@@ -226,6 +226,38 @@ async def ws_helper_create(hass: HomeAssistant, connection, msg) -> None:
 
 
 @websocket_api.websocket_command({
+    vol.Required("type"): "hestia/helper/update",
+    vol.Required("entry_id"): str,
+    vol.Required("name"): str,
+    vol.Required("entities"): [str],
+    vol.Optional("agg", default="mean"): str,      # numeric: mean/min/max/median
+    vol.Optional("mode", default="any"): vol.In(("any", "all")),   # binary: ODER/UND
+    vol.Optional("area_id"): vol.Any(str, None),   # Area (auch Leeren) auf die Helfer-Entität
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_helper_update(hass: HomeAssistant, connection, msg) -> None:
+    """Bestehenden Helfer editieren (Name/Quellen/Aggregat/Area). Ownership-Guard + Brücken-Reconcile
+    stecken in helpers.async_update — hier nur Validierung, Area-Setzen, Fehler-Mapping."""
+    if not msg["entities"]:
+        connection.send_error(msg["id"], "no_entities", "Mindestens eine Quell-Entität wählen.")
+        return
+    try:
+        rec = await helpers.async_update(hass, msg["entry_id"], name=msg["name"],
+                                         entities=msg["entities"], agg=msg["agg"], mode=msg["mode"])
+    except PermissionError as e:   # fremder Helfer → NICHT anfassen (Safety-Fix 2026-07-13)
+        connection.send_error(msg["id"], "forbidden", str(e))
+        return
+    except Exception as e:  # noqa: BLE001 — Flow-/Reload-Fehler → ehrliche WS-Fehlermeldung
+        connection.send_error(msg["id"], "update_failed", str(e))
+        return
+    eid = rec.get("entity_id")
+    if eid and "area_id" in msg:                   # Area setzen bzw. entfernen (leer → None)
+        er.async_get(hass).async_update_entity(eid, area_id=msg["area_id"] or None)
+    connection.send_result(msg["id"], rec)
+
+
+@websocket_api.websocket_command({
     vol.Required("type"): "hestia/helper/delete",
     vol.Required("entry_id"): str,
 })
@@ -342,6 +374,38 @@ async def ws_sentence_create(hass: HomeAssistant, connection, msg) -> None:
 
 
 @websocket_api.websocket_command({
+    vol.Required("type"): "hestia/sentence/update",
+    vol.Required("sentence_id"): str,   # NICHT `id` — HAs reserviertes WS-Envelope-Feld
+    vol.Required("phrases"): [str],
+    vol.Required("target_entity"): str,
+    vol.Optional("mode", default="on"): vol.In(MODES),
+    vol.Optional("response", default=""): str,
+})
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_sentence_update(hass: HomeAssistant, connection, msg) -> None:
+    """Bestehenden Satz editieren (per sentence_id). Validierung identisch zum Anlegen."""
+    phrases = [p.strip() for p in msg["phrases"] if isinstance(p, str) and p.strip()]
+    if not phrases:
+        connection.send_error(msg["id"], "no_phrases", "Mindestens einen Satz angeben.")
+        return
+    target = msg["target_entity"].strip()
+    if not target or hass.states.get(target) is None:
+        connection.send_error(msg["id"], "bad_target", f"Unbekannte Ziel-Entität: {target}")
+        return
+    if target.split(".")[0] not in SUPPORTED_DOMAINS:   # sonst würde async_fire still no-oppen
+        connection.send_error(msg["id"], "bad_domain",
+                              f"Diese Geräteart lässt sich (noch) nicht per Satz steuern: {target}")
+        return
+    rec = await get_sentence_store(hass).async_update(
+        msg["sentence_id"], phrases, target, msg["mode"], msg.get("response", ""))
+    if rec is None:
+        connection.send_error(msg["id"], "not_found", "Satz nicht gefunden.")
+        return
+    connection.send_result(msg["id"], rec)
+
+
+@websocket_api.websocket_command({
     vol.Required("type"): "hestia/sentence/delete",
     vol.Required("sentence_id"): str,   # NICHT `id` — das ist HAs reserviertes WS-Envelope-Feld
 })
@@ -365,9 +429,11 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_set_bulk)
     websocket_api.async_register_command(hass, ws_helper_list)
     websocket_api.async_register_command(hass, ws_helper_create)
+    websocket_api.async_register_command(hass, ws_helper_update)
     websocket_api.async_register_command(hass, ws_helper_delete)
     websocket_api.async_register_command(hass, ws_settings_get)
     websocket_api.async_register_command(hass, ws_settings_set)
     websocket_api.async_register_command(hass, ws_sentence_list)
     websocket_api.async_register_command(hass, ws_sentence_create)
+    websocket_api.async_register_command(hass, ws_sentence_update)
     websocket_api.async_register_command(hass, ws_sentence_delete)

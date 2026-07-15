@@ -133,6 +133,22 @@ class SentenceStore:
             return True
         return False
 
+    async def async_update(self, sentence_id: str, phrases: list[str], target_entity: str,
+                           mode: str, response: str = "") -> dict | None:
+        """Bestehenden Satz per id überschreiben. id UND Listenposition bleiben erhalten → der
+        Match-Tie-Break (Anlege-Reihenfolge, s. `match`) verschiebt sich beim Editieren nicht.
+        Rückgabe = aktualisierter Record, oder None wenn die id nicht existiert."""
+        assert self._data is not None, "async_load() zuerst aufrufen"
+        for rec in self._data:
+            if rec.get("id") == sentence_id:
+                rec["phrases"] = [p.strip() for p in phrases if isinstance(p, str) and p.strip()]
+                rec["target_entity"] = target_entity
+                rec["mode"] = mode if mode in MODES else "on"
+                rec["response"] = (response or "").strip()
+                await self._async_save()
+                return dict(rec)
+        return None
+
     async def async_rename_target(self, old_entity_id: str, new_entity_id: str) -> int:
         """Entity-Rename-Migration: `target_entity` aller Sätze old→new umschreiben.
 

@@ -272,6 +272,9 @@ button, input, textarea { font: inherit; color: inherit; }
 .backup-note svg { width: 15px; height: 15px; flex: none; }
 .remove-link { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 12px; padding: 0; align-self: flex-start; }
 .remove-link:hover { text-decoration: underline; }
+.rowacts { display: flex; align-items: center; gap: 14px; justify-self: end; }
+.row-link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; white-space: nowrap; }
+.row-link:hover { text-decoration: underline; }
 .save-bar { display: flex; gap: 10px; }
 .save-bar .btn { flex: 1; justify-content: center; }
 
@@ -1254,7 +1257,10 @@ class HestiaPanel extends HTMLElement {
         <div class="namecell"><div class="nm">${esc(h.name)}</div><div class="eid">${esc(h.entity_id || "—")}</div></div>
         <div class="hval">${esc(st.val)}${st.unit ? ` <small>${esc(st.unit)}</small>` : ""}</div>
         <div class="htype">${isNum ? "Numerisch" : "Binär"}</div>
-        <button class="remove-link hdel" data-del="${esc(h.entry_id)}">Löschen</button>
+        <div class="rowacts">
+          <button class="row-link hedit" data-edit="${esc(h.entry_id)}">Bearbeiten</button>
+          <button class="remove-link hdel" data-del="${esc(h.entry_id)}">Löschen</button>
+        </div>
       </div>`;
     };
     const section = (title, hint, arr) => arr.length ? `<section class="area">
@@ -1273,6 +1279,8 @@ class HestiaPanel extends HTMLElement {
 
     this._content.querySelectorAll(".hdel").forEach((b) =>
       b.addEventListener("click", () => this._deleteHelper(b.dataset.del)));
+    this._content.querySelectorAll(".hedit").forEach((b) =>
+      b.addEventListener("click", () => this._openHelperEdit(b.dataset.edit)));
   }
 
   async _deleteHelper(entryId) {
@@ -1300,6 +1308,25 @@ class HestiaPanel extends HTMLElement {
     this._root.querySelector("#scrimHelper").classList.remove("on");
     this._root.querySelector("#helperModal").classList.remove("on");
     this._hcDraft = null;
+  }
+
+  // ── Helfer bearbeiten: dasselbe Modal, aus der Zeile vorbefüllt (kind/sources/agg/mode/area) ──
+  _openHelperEdit(entryId) {
+    const h = (this._helpers || []).find((x) => x.entry_id === entryId);
+    if (!h) return;
+    this._hcDraft = {
+      entry_id: h.entry_id,
+      kind: h.kind || (h.domain === "min_max" ? "numeric" : "binary"),
+      name: h.name || "",
+      entities: (h.sources || []).slice(),   // Brücken sind bereits als "<eid>::<attr>" rückabgebildet
+      agg: h.agg || "mean",
+      mode: h.mode || "any",
+      area_id: h.area_id || "",
+    };
+    this._hcSearch = "";
+    this._root.querySelector("#scrimHelper").classList.add("on");
+    this._root.querySelector("#helperModal").classList.add("on");
+    this._renderHelperModal();
   }
 
   // Quell-Kandidaten je Sorte aus hass.states (numeric: sensor/number/input_number; binary: binary_sensor).
@@ -1378,6 +1405,7 @@ class HestiaPanel extends HTMLElement {
   _renderHelperModal() {
     const modal = this._root.querySelector("#helperModal");
     const d = this._hcDraft;
+    const editing = !!d.entry_id;
     const isNum = d.kind === "numeric";
     const seg = (key, cur, opts) => `<div class="seg">${opts.map(([k, l]) =>
       `<button class="seg-b${cur === k ? " on" : ""}" data-${key}="${k}">${l}</button>`).join("")}</div>`;
@@ -1400,12 +1428,15 @@ class HestiaPanel extends HTMLElement {
 
     const canSave = d.name.trim() && d.entities.length;
     modal.innerHTML = `
-      <div class="modal-head"><h2>Helfer anlegen</h2>
+      <div class="modal-head"><h2>${editing ? "Helfer bearbeiten" : "Helfer anlegen"}</h2>
         <button class="btn" id="hcClose">${svg('<path d="M18 6 6 18M6 6l12 12"/>', 15)}Schließen</button></div>
       <div class="hc-body">
         <div class="field"><label>Art</label>
-          ${seg("kind", d.kind, [["numeric", "Numerisch (Ø·min·max)"], ["binary", "Binär (ODER·UND)"]])}
-          <div class="hint">${isNum ? "Fasst mehrere Zahlen-Sensoren zu einem Wert zusammen." : "Fasst mehrere Kontakte/Binärsensoren zu einem Zustand zusammen."}</div>
+          ${editing
+            ? `<div class="seg">${[["numeric", "Numerisch (Ø·min·max)"], ["binary", "Binär (ODER·UND)"]].map(([k, l]) => `<button class="seg-b${d.kind === k ? " on" : ""}" disabled>${l}</button>`).join("")}</div>
+               <div class="hint">Die Art lässt sich beim Bearbeiten nicht ändern (anderer Helfer-Typ) — dafür löschen &amp; neu anlegen.</div>`
+            : `${seg("kind", d.kind, [["numeric", "Numerisch (Ø·min·max)"], ["binary", "Binär (ODER·UND)"]])}
+               <div class="hint">${isNum ? "Fasst mehrere Zahlen-Sensoren zu einem Wert zusammen." : "Fasst mehrere Kontakte/Binärsensoren zu einem Zustand zusammen."}</div>`}
         </div>
         <div class="field"><label>Name</label>
           <input class="inp" id="hcName" value="${esc(d.name)}" placeholder="${isNum ? "z. B. Arbeitszimmer-Temperatur" : "z. B. Wohnzimmer-Präsenz"}"></div>
@@ -1424,7 +1455,7 @@ class HestiaPanel extends HTMLElement {
           <select class="inp" id="hcArea">${areaOpts}</select></div>
       </div>
       <div class="hc-foot">
-        <button class="btn primary" id="hcCreate"${canSave ? "" : " disabled"}>Anlegen &amp; hinzufügen</button>
+        <button class="btn primary" id="hcCreate"${canSave ? "" : " disabled"}>${editing ? "Speichern" : "Anlegen &amp; hinzufügen"}</button>
       </div>`;
 
     modal.querySelector("#hcClose").addEventListener("click", () => this._closeHelperCreate());
@@ -1452,20 +1483,30 @@ class HestiaPanel extends HTMLElement {
   async _createHelper() {
     const d = this._hcDraft;
     if (!(d.name.trim() && d.entities.length)) return;
+    const editing = !!d.entry_id;
     const btn = this._root.querySelector("#hcCreate");
-    if (btn) { btn.disabled = true; btn.textContent = "Lege an …"; }
-    const payload = { type: "hestia/helper/create", kind: d.kind, name: d.name.trim(), entities: d.entities };
+    if (btn) { btn.disabled = true; btn.textContent = editing ? "Speichere …" : "Lege an …"; }
+    // Beim Bearbeiten area_id IMMER mitschicken (auch leer → Area entfernen); beim Anlegen nur wenn gewählt.
+    const payload = editing
+      ? { type: "hestia/helper/update", entry_id: d.entry_id, name: d.name.trim(), entities: d.entities, area_id: d.area_id || null }
+      : { type: "hestia/helper/create", kind: d.kind, name: d.name.trim(), entities: d.entities };
     if (d.kind === "numeric") payload.agg = d.agg; else payload.mode = d.mode;
-    if (d.area_id) payload.area_id = d.area_id;
+    if (!editing && d.area_id) payload.area_id = d.area_id;
     try {
       const rec = await this._hass.callWS(payload);
-      (this._helpers = this._helpers || []).push({ entry_id: rec.entry_id, entity_id: rec.entity_id, name: rec.name, domain: d.kind === "numeric" ? "min_max" : "group" });
-      this._rows = null;   // Exposure-Liste ist jetzt veraltet (Helfer wurde exposed) → beim nächsten Besuch neu laden
+      const row = { name: d.name.trim(), kind: d.kind, agg: d.agg, mode: d.mode, sources: d.entities.slice(), area_id: d.area_id || null };
+      if (editing) {
+        const i = (this._helpers || []).findIndex((x) => x.entry_id === d.entry_id);
+        if (i >= 0) this._helpers[i] = { ...this._helpers[i], ...row };
+      } else {
+        (this._helpers = this._helpers || []).push({ entry_id: rec.entry_id, entity_id: rec.entity_id, domain: d.kind === "numeric" ? "min_max" : "group", ...row });
+      }
+      this._rows = null;   // Exposure-Liste evtl. veraltet (Name/Exposure geändert) → beim nächsten Besuch neu laden
       this._closeHelperCreate();
       this._renderHelpers();
     } catch (e) {
-      if (btn) { btn.disabled = false; btn.textContent = "Anlegen & hinzufügen"; }
-      alert("Anlegen fehlgeschlagen: " + ((e && e.message) || e));
+      if (btn) { btn.disabled = false; btn.textContent = editing ? "Speichern" : "Anlegen & hinzufügen"; }
+      alert((editing ? "Speichern" : "Anlegen") + " fehlgeschlagen: " + ((e && e.message) || e));
     }
   }
 
@@ -1501,7 +1542,10 @@ class HestiaPanel extends HTMLElement {
         <div class="phrases"><div class="chips">${chips}</div>${resp}</div>
         <div class="tgt">${esc(s.target_entity)}</div>
         <div class="smode">${modeLbl[s.mode] || esc(s.mode)}</div>
-        <button class="remove-link sdel" data-del="${esc(s.id)}">Löschen</button>
+        <div class="rowacts">
+          <button class="row-link sedit" data-edit="${esc(s.id)}">Bearbeiten</button>
+          <button class="remove-link sdel" data-del="${esc(s.id)}">Löschen</button>
+        </div>
       </div>`;
     };
     const body = !list.length
@@ -1513,6 +1557,8 @@ class HestiaPanel extends HTMLElement {
       ${errHtml}${body}</div>`;
     this._content.querySelectorAll(".sdel").forEach((b) =>
       b.addEventListener("click", () => this._deleteSentence(b.dataset.del)));
+    this._content.querySelectorAll(".sedit").forEach((b) =>
+      b.addEventListener("click", () => this._openSentenceEdit(b.dataset.edit)));
   }
 
   async _deleteSentence(id) {
@@ -1544,6 +1590,24 @@ class HestiaPanel extends HTMLElement {
     this._scDraft = null;
   }
 
+  // ── Satz bearbeiten: dasselbe Modal, aus der Zeile vorbefüllt ──
+  _openSentenceEdit(id) {
+    const s = (this._sentences || []).find((x) => x.id === id);
+    if (!s) return;
+    this._scDraft = {
+      id: s.id,
+      phrases: (s.phrases || []).slice(),
+      target_entity: s.target_entity || "",
+      mode: s.mode || "on",
+      response: s.response || "",
+    };
+    this._scSearch = "";
+    this._scPhrasePending = "";
+    this._root.querySelector("#scrimSentence").classList.add("on");
+    this._root.querySelector("#sentenceModal").classList.add("on");
+    this._renderSentenceModal();
+  }
+
   // Ziel-Kandidaten: aktionsfähige Domains aus hass.states (Szene/Skript/Schalter/Licht/…).
   _scTargets() {
     // Muss mit sentences.SUPPORTED_DOMAINS (Server) übereinstimmen — Domains, die async_fire
@@ -1567,6 +1631,7 @@ class HestiaPanel extends HTMLElement {
   _renderSentenceModal() {
     const modal = this._root.querySelector("#sentenceModal");
     const d = this._scDraft;
+    const editing = !!d.id;
     const xIcon = '<path d="M18 6 6 18M6 6l12 12"/>';
     const seg = (key, cur, opts) => `<div class="seg">${opts.map(([k, l]) =>
       `<button class="seg-b${cur === k ? " on" : ""}" data-${key}="${k}">${l}</button>`).join("")}</div>`;
@@ -1581,7 +1646,7 @@ class HestiaPanel extends HTMLElement {
     const pend0 = (this._scPhrasePending || "").trim();
     const canSave = (d.phrases.length || pend0) && d.target_entity;
     modal.innerHTML = `
-      <div class="modal-head"><h2>Satz anlegen</h2>
+      <div class="modal-head"><h2>${editing ? "Satz bearbeiten" : "Satz anlegen"}</h2>
         <button class="btn" id="scClose">${svg(xIcon, 15)}Schließen</button></div>
       <div class="hc-body">
         <div class="field"><label>Sätze <span class="hint">— Enter fügt hinzu; mehrere Formulierungen für dieselbe Aktion</span></label>
@@ -1600,7 +1665,7 @@ class HestiaPanel extends HTMLElement {
           <input class="inp" id="scResp" value="${esc(d.response)}" placeholder="Ok."></div>
       </div>
       <div class="hc-foot">
-        <button class="btn primary" id="scCreate"${canSave ? "" : " disabled"}>Anlegen</button>
+        <button class="btn primary" id="scCreate"${canSave ? "" : " disabled"}>${editing ? "Speichern" : "Anlegen"}</button>
       </div>`;
 
     const refreshSave = () => { const c = modal.querySelector("#scCreate"); const pend = (this._scPhrasePending || "").trim(); if (c) c.disabled = !((d.phrases.length || pend) && d.target_entity); };
@@ -1644,22 +1709,30 @@ class HestiaPanel extends HTMLElement {
     const pend = (this._scPhrasePending || "").trim();   // getippten (nicht per Enter bestätigten) Satz mit-übernehmen
     if (pend && !d.phrases.includes(pend)) { d.phrases.push(pend); this._scPhrasePending = ""; }
     if (!(d.phrases.length && d.target_entity)) return;
+    const editing = !!d.id;
     const btn = this._root.querySelector("#scCreate");
-    if (btn) { btn.disabled = true; btn.textContent = "Lege an …"; }
+    if (btn) { btn.disabled = true; btn.textContent = editing ? "Speichere …" : "Lege an …"; }
+    const payload = {
+      type: editing ? "hestia/sentence/update" : "hestia/sentence/create",
+      phrases: d.phrases,
+      target_entity: d.target_entity,
+      mode: d.mode,
+      response: (d.response || "").trim(),
+    };
+    if (editing) payload.sentence_id = d.id;
     try {
-      const rec = await this._hass.callWS({
-        type: "hestia/sentence/create",
-        phrases: d.phrases,
-        target_entity: d.target_entity,
-        mode: d.mode,
-        response: (d.response || "").trim(),
-      });
-      (this._sentences = this._sentences || []).push(rec);
+      const rec = await this._hass.callWS(payload);
+      if (editing) {
+        const i = (this._sentences || []).findIndex((x) => x.id === d.id);
+        if (i >= 0) this._sentences[i] = rec; else (this._sentences = this._sentences || []).push(rec);
+      } else {
+        (this._sentences = this._sentences || []).push(rec);
+      }
       this._closeSentenceCreate();
       this._renderSentences();
     } catch (e) {
-      if (btn) { btn.disabled = false; btn.textContent = "Anlegen"; }
-      alert("Anlegen fehlgeschlagen: " + ((e && e.message) || e));
+      if (btn) { btn.disabled = false; btn.textContent = editing ? "Speichern" : "Anlegen"; }
+      alert((editing ? "Speichern" : "Anlegen") + " fehlgeschlagen: " + ((e && e.message) || e));
     }
   }
 }
