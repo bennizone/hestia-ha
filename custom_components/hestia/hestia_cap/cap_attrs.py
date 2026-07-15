@@ -64,10 +64,14 @@ class EnumCapAttr:
                 (hvac_mode wird in captag HAND-gerendert: off-Filter + `_ordered` + modeN-Hinweis).
     de_noun   : `_ATTR_DE`-Nomen. de_neg: `_ATTR_NEG_DE`-Verneinung (Genus korrekt).
     feat_bit  : optionales supported_features-Gate (Phase B verdrahtet, §10.4). Gesetzt NUR bei
-                sound_mode (SELECT_SOUND_MODE=65536): über-claim-sicher wie `src` — ein media_player
-                mit `sound_mode_list` aber ohne SELECT_SOUND_MODE-Bit ist NICHT fähig (result
-                `_enum_caps_for` überspringt ihn; captag gatet den Advertiser mit demselben Bit).
-                Alle anderen Zeilen tragen ein echtes Listen-Attribut → truthy-Guard reicht (feat_bit=None).
+                sound_mode (SELECT_SOUND_MODE=65536): ein media_player mit `sound_mode_list` aber ohne
+                Bit ist NICHT fähig (result `_enum_caps_for` überspringt ihn; captag advertised nur, was
+                caps.settable trägt → dasselbe Gate, Single-Source). Rationale für die Asymmetrie: die
+                übrigen Batch1b-Listen sind in HA-Core zwar ebenso feature-gated (MODES=1/OPERATION_MODE=2/
+                ACTIVITY=4/FAN_SPEED=64), aber (a) sound_mode teilt den media_player-Block mit `src`, dem
+                notorischen Over-Claimer (D1-Historie) → Bit-Konsistenz dort; (b) jedes zusätzliche Bit-Gate
+                ist zusätzliche train==serve-Divergenzfläche ohne Verhaltensgewinn (truthy-Guard ist im
+                False-Negative-sicheren D4-Sinn konservativ genug). Neue Zeilen also feat_bit=None by default.
     """
     attr: str
     domains: tuple[str, ...]

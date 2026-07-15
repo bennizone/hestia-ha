@@ -49,8 +49,8 @@ from . import cap_attrs
 from .result import capabilities_of
 
 CAP_TAG_X = 8   # Inline-Schwelle GELOCKT (2026-07-15, X-Sweep): len(werte)≤8 → inline, >8 → labelN
-_SELECT_SOURCE = 2048        # MediaPlayerEntityFeature.SELECT_SOURCE (D1-Gate für src)
-_SELECT_SOUND_MODE = 65536   # MediaPlayerEntityFeature.SELECT_SOUND_MODE (D1-Gate für snd, v23.6 Batch1b)
+_SELECT_SOURCE = 2048        # MediaPlayerEntityFeature.SELECT_SOURCE (D1-Gate für src; source ist KEIN Settable
+                             # → Bit muss hier hand-geprüft werden, anders als sound_mode/vol, s. media_player-Block)
 _STRUCT = re.compile(r"[/·:\[\]\r\n\t]+")   # Tag-Struktur-Zeichen (D7)
 
 # Advertiser-Paare (tag_label, list_key) aus der Spec-Tabelle — Single-Source (Byte-identisch zu den
@@ -147,9 +147,9 @@ def cap_tag(domain: str, attributes: dict | None, x: int = CAP_TAG_X) -> str:
             src = _lst("src", a.get("source_list"), x)             # Advertiser (RAW-Order, D2/D7)
             if src:
                 parts.append(src)
-        if sf & _SELECT_SOUND_MODE:                                # v23.6 Batch1b: snd bit-gegatet (== caps-feat_bit)
-            snd = _adv(a, "sound_mode", x)                         # Advertiser aus Tabelle (RAW-Order, D2/D7)
-            if snd:
+        if "sound_mode" in s:                                      # v23.6 Batch1b: Diskriminator aus caps (D1) —
+            snd = _adv(a, "sound_mode", x)                         # caps hat den SELECT_SOUND_MODE-feat_bit schon
+            if snd:                                                # geprüft (Single-Source, kein Bit-Doppel-Literal)
                 parts.append(snd)
 
     elif domain == "cover":                                        # D6: heute executor-verdrahtet
