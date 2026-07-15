@@ -551,6 +551,13 @@ def plan_set_state(attr, value, caps: Caps | None):
     if spec.kind == "enum":                             # (3a) geräte-echte Enum (AC ohne heat, WLED-effect)
         if canon in spec.values:
             return canon, unit, False, None
+        # G1 fuzzy-Resolve (Regen-Strang R6/H3): Case-insensitiv gegen die Geräteliste — Nutzer/Modell
+        # variieren Groß/Klein („Dolby Surround"/„dolby surround"); Case bestimmt KEINE Fähigkeit.
+        # Rückgabe = exakter Geräte-Case (HA-Service-Wert), invalid_value nur bei echt fremdem Wert.
+        _cf = str(canon).lower()
+        _hit = next((v for v in spec.values if str(v).lower() == _cf), None)
+        if _hit is not None:
+            return _hit, unit, False, None
         return None, None, False, err_invalid_value(attr, value, list(spec.values[:_ALLOWED_TRUNC_N]))
     if spec.kind == "range":                            # (3b) Klemmung → done_clamped
         eff, clamped = _clamp(canon, spec)

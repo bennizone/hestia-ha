@@ -55,7 +55,7 @@ SETTABLE_ATTRS = {
     "color":      {"kind": "colorword"},
     "color_temp": {"kind": "colortemp"},
     "hvac_mode":  {"kind": "words", "values": HVAC_MODES},
-    "preset":     {"kind": "words", "values": PRESETS},
+    "preset":     {"kind": "str"},   # R2 (Regen-Strang): preset_modes sind per-Gerät (wie fan_mode/swing_mode) → freier String + Executor-Resolve (G1); PRESETS bleibt Executor-Postel-Default, NICHT mehr GBNF-Enum
     "lock":       {"kind": "words", "values": LOCK_STATES},
     "alarm":      {"kind": "words", "values": ALARM_STATES},
     "oscillate":  {"kind": "words", "values": ONOFF},

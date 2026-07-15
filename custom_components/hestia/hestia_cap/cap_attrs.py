@@ -42,7 +42,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # ── Fixe Wort-Enums (aus schema.py hierher gezogen, §10.3; schema re-exportiert) ──
-HVAC_MODES = ("heat", "cool", "auto", "off", "dry", "fan_only")
+HVAC_MODES = ("heat", "cool", "heat_cool", "auto", "off", "dry", "fan_only")  # +heat_cool (HA-Core-real, Regen-Strang R2)
 PRESETS = ("eco", "boost", "away", "comfort", "home", "sleep")     # climate preset_mode (Executor Postel-vergebend)
 LOCK_STATES = ("locked", "unlocked")                              # + Safety-Gate (Zwei-Turn-Confirm)
 ALARM_STATES = ("armed_home", "armed_away", "armed_night", "disarmed")  # + Safety-Gate
