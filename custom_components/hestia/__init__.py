@@ -19,6 +19,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN
 from .panel import async_register_panel, async_remove_panel
+from .reqlog import RequestLog
 from .sentences import SentenceStore
 from .store import ExposureStore
 from .websocket import async_register as async_register_ws
@@ -69,6 +70,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await sent.async_load()
         bucket["_sentences"] = sent
 
+    # Request-Log (single instance) — rotierender Ring der letzten Conversation-Turns (Observability).
+    if "_reqlog" not in bucket:
+        reqlog = RequestLog(hass)
+        await reqlog.async_load()
+        bucket["_reqlog"] = reqlog
+
     # Entity-Rename-Listener (single instance) — hält Exposure-Store + Custom-Satz-Ziele
     # rename-fest, indem er die per-entity_id gekeyten Daten bei Umbenennung mitzieht.
     if "_er_unsub" not in bucket:
@@ -97,4 +104,5 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 unsub()
             bucket.pop("_store", None)
             bucket.pop("_sentences", None)
+            bucket.pop("_reqlog", None)
     return ok

@@ -32,6 +32,7 @@ from .hestia_cap import result as R
 from .house_builder import build_exposure, build_house
 from .executor import execute_calls
 from .sentences import async_fire as sentence_fire, get_sentence_store
+from .reqlog import get_reqlog
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ class HestiaAgent(conversation.ConversationEntity):
             _LOGGER.debug("Hestia custom-sentence hit id=%s edits=%d target=%s mode=%s",
                           rec.get("id"), edits, rec.get("target_entity"), rec.get("mode"))
             answer = await sentence_fire(self.hass, rec, user_input.context, self._deny)
+            self._record(user_input, exposure_n=None, path="custom_sentence", iters=[], answer=answer)
             # Router-Aktion ist terminal → Mikro zu (auch wenn der Admin-Text auf „?" endet).
             return self._result(user_input, chat_log, answer, continue_conversation=False)
 
@@ -143,6 +145,7 @@ class HestiaAgent(conversation.ConversationEntity):
         # 2. Loop ≤ depth
         answer: str | None = None
         last_result: dict | None = None
+        iters: list[dict] = []                               # reqlog: was das Modell sah/tat je Runde
         for i in range(self._depth):
             text = await self._complete(msgs, tools)
             _LOGGER.debug("Hestia iter %d model=%r", i, text)
@@ -155,6 +158,7 @@ class HestiaAgent(conversation.ConversationEntity):
                                                  user_input.context, self._deny,
                                                  user_input.device_id)
                 _LOGGER.debug("Hestia iter %d result=%s", i, result)
+                iters.append({"model": text, "result": result})
                 try:
                     last_result = json.loads(result)
                 except ValueError:
@@ -162,16 +166,32 @@ class HestiaAgent(conversation.ConversationEntity):
                 msgs.append({"role": "assistant", "content": text})
                 msgs.append({"role": "tool", "content": result})
                 continue
+            iters.append({"model": text, "result": ""})      # freier Text → Turn-Ende
             answer = text        # freier Text → fertig
             break
 
         # 3. Loop erschöpft → variabler Fehlertext (KEIN LLM)
+        path = "loop"
         if answer is None:
             answer = random.choice(LOOP_EXHAUSTED_TEXTS)
+            path = "exhausted"
         else:
             answer = _guard_truthful(answer, last_result)   # kein falscher Erfolg bei ok:false
 
+        self._record(user_input, exposure_n=len(exposure), path=path, iters=iters, answer=answer)
         return self._result(user_input, chat_log, answer)
+
+    def _record(self, user_input, *, exposure_n, path, iters, answer) -> None:
+        """Turn ins rotierende Request-Log schreiben (Observability, best-effort)."""
+        rl = get_reqlog(self.hass)
+        if rl is None:
+            return
+        try:
+            rl.record(text=user_input.text, device_id=user_input.device_id,
+                      room=self._device_area(user_input.device_id),
+                      exposure_n=exposure_n, path=path, iters=iters, answer=answer)
+        except Exception as e:  # noqa: BLE001 — Logging darf den Turn nie brechen
+            _LOGGER.debug("reqlog record failed: %s", e)
 
     # ── Live-Kontext-Schwanz (volatil, nach den Tools — prefix-cache-schonend) ──
     def _live_context(self, user_input, exposure: dict[str, dict]) -> str:

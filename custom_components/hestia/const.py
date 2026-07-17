@@ -10,6 +10,9 @@ CONF_UNSAFE_MODE = "unsafe_mode"      # Config-Toggle: an → Executor erlaubt S
                                       #   (nimmt lock/alarm aus deny). Aus (default) → safeguard blockt (err_unsafe).
 
 DEFAULT_LOOP_DEPTH = 3
+
+# Request-Log (reqlog.py): rotierender Ring der letzten Conversation-Turns (Observability).
+REQLOG_MAX = 50
 DEFAULT_DENY = ["lock", "alarm_control_panel"]
 DEFAULT_UNSAFE_MODE = False
 _SAFETY_DOMAINS = ("lock", "alarm_control_panel")

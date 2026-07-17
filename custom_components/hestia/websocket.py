@@ -21,6 +21,7 @@ from . import helpers
 from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_UNSAFE_MODE,
                     DEFAULT_LOOP_DEPTH, DEFAULT_UNSAFE_MODE)
 from .house_builder import _aliases, _entity_area_id, _friendly_name
+from .reqlog import get_reqlog
 from .sentences import MODES, SUPPORTED_DOMAINS, get_sentence_store
 from .store import PATCHABLE, get_store
 
@@ -420,6 +421,19 @@ async def ws_sentence_delete(hass: HomeAssistant, connection, msg) -> None:
     connection.send_result(msg["id"], {"removed": sid})
 
 
+@websocket_api.websocket_command({
+    vol.Required("type"): "hestia/log/recent",
+    vol.Optional("limit"): vol.All(int, vol.Range(min=1, max=200)),
+})
+@websocket_api.require_admin
+@callback
+def ws_log_recent(hass: HomeAssistant, connection, msg) -> None:
+    """Letzte Conversation-Turns aus dem rotierenden Request-Log (neueste zuerst)."""
+    rl = get_reqlog(hass)
+    entries = rl.recent(msg.get("limit")) if rl is not None else []
+    connection.send_result(msg["id"], {"entries": entries})
+
+
 @callback
 def async_register(hass: HomeAssistant) -> None:
     """Alle Hestia-WS-Befehle registrieren (idempotent — HA dedupliziert nach type)."""
@@ -437,3 +451,4 @@ def async_register(hass: HomeAssistant) -> None:
     websocket_api.async_register_command(hass, ws_sentence_create)
     websocket_api.async_register_command(hass, ws_sentence_update)
     websocket_api.async_register_command(hass, ws_sentence_delete)
+    websocket_api.async_register_command(hass, ws_log_recent)
