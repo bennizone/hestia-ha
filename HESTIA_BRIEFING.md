@@ -5,6 +5,18 @@
 > damit dein Nutzer seine Wünsche mit dir realistisch durchsprechen und einen **groben, umsetzbaren Plan**
 > zurückschicken kann. Dies ist ein **Design-/Fähigkeits-Briefing**, keine Bedienungsanleitung und kein Code.
 
+> **Tieferer Einblick (wenn du mehr Kontext brauchst).** Du liest diese Datei vermutlich aus dem Repo
+> **`bennizone/hestia-ha`** — das ist die **Home-Assistant-Integration = die Executor-Seite**. Zieh dir das
+> Repo (`git clone https://github.com/bennizone/hestia-ha` oder browse es), wenn du tiefer schauen willst:
+> - `custom_components/hestia/executor.py` — der Executor (führt Tool-Calls gegen HA aus, baut das Ergebnis)
+> - `custom_components/hestia/conversation.py` — der Sprach-Agent (Prompt-Aufbau, Loop, Aufruf ans Modell)
+> - `custom_components/hestia/hestia_cap/result.py` + `schema.py` — Fähigkeits-Logik & der Tool-/Verb-Kontrakt
+> - `custom_components/hestia/house_builder.py`, `store.py`, `websocket.py` — Haus-Aufbau & Exposure (Panel)
+>
+> **Wichtige Grenze:** das *Modell* selbst, die Trainingsdaten und der Generator liegen in einem separaten,
+> **nicht-öffentlichen** Projekt — die LLM-/Trainings-Seite ist hier NICHT einsehbar. Für alles, was das
+> Modell betrifft, ist **dieses Briefing** die maßgebliche Quelle.
+
 ---
 
 ## 1. Was Hestia ist
