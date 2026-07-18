@@ -39,13 +39,18 @@ _EXPLICIT_NONENUM_DOMAIN = {
     "temperature": "climate", "brightness": "light", "color": "light",
     "color_temp": "light", "volume": "media_player", "position": "cover",
     "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel",
-    "oscillate": "fan", "tilt": "cover", "direction": "fan"}
+    "oscillate": "fan", "tilt": "cover", "direction": "fan",
+    "humidity": "humidifier"}   # v23.7 D7: single-domain range → Narrowing (humidifier) + executable
 ATTR_DOMAIN = {**_EXPLICIT_NONENUM_DOMAIN, **cap_attrs.SINGLE_DOMAIN}
+
+# v23.7 D5⁺: `value` (number/input_number) ist MULTI-domain → wie preset/option NICHT in ATTR_DOMAIN
+# (kein Single-Narrowing; Auflösung über Name), aber ausführbar (Dispatch splittet nach Domain).
+_MULTI_DOMAIN_NONENUM = frozenset({"value"})
 
 # Set-State-Attribute, die der Executor DISPATCHEN kann (Executability-Gate, getrennt von der
 # Narrowing-Map ATTR_DOMAIN): alle eindeutigen + die Multi-Domain-Enum-Attrs aus der Tabelle
-# (`preset`, `option`), die per Entität geplant/nach Domain gesplittet werden.
-EXECUTABLE_ATTRS = frozenset(ATTR_DOMAIN) | cap_attrs.MULTI_DOMAIN_ATTRS
+# (`preset`, `option`) + Multi-Domain-Numerik (`value`), die per Entität geplant/nach Domain gesplittet werden.
+EXECUTABLE_ATTRS = frozenset(ATTR_DOMAIN) | cap_attrs.MULTI_DOMAIN_ATTRS | _MULTI_DOMAIN_NONENUM
 
 # amount-Enum → Schrittweite (pct-Verben) bzw. Grad-Delta (temperature)
 STEP_PCT = {"a_little": 10, "some": 25, "a_lot": 50}

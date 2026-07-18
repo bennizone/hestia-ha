@@ -207,6 +207,16 @@ async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
         await hass.services.async_call("cover", "set_cover_tilt_position",   # `limit` gilt für position,
                                        {"entity_id": eids, "tilt_position": int(canon)},  # nicht die Tilt-Achse)
                                        blocking=True, context=context)
+    elif attr == "value":          # v23.7 D5⁺: number/input_number (multi-domain) — je Domain set_value
+        for d in ("number", "input_number"):
+            de = [e for e in eids if exposure[e]["domain"] == d]
+            if de:
+                await hass.services.async_call(d, "set_value", {"entity_id": de, "value": float(canon)},
+                                               blocking=True, context=context)
+    elif attr == "humidity":       # v23.7 D7: humidifier Ziel-Luftfeuchte (canon = geklemmter pct-Wert)
+        await hass.services.async_call("humidifier", "set_humidity",
+                                       {"entity_id": eids, "humidity": int(canon)},
+                                       blocking=True, context=context)
     elif attr == "lock":            # Safety — nur erreichbar wenn unsafe_mode lock aus deny nahm
         await hass.services.async_call("lock", "lock" if canon == "locked" else "unlock",
                                        {"entity_id": eids}, blocking=True, context=context)

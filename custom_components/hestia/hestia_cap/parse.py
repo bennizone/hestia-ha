@@ -90,9 +90,12 @@ def _check_set_value(attr: str, val) -> list:
     if kind == "pct":
         if isinstance(val, str) and val in ("max", "min"):
             return []
-        if isinstance(val, (int, float)) and 0 <= val <= 100:
+        # Über-/Unter-Range NICHT hier ablehnen — plan_set_state klemmt numerische pct-Werte auf
+        # [lo,100] (done_clamped, §6.5), konsistent mit kind=="number". Parse-Reject würde die
+        # Klemm-Logik überspringen → Über-Range-% liefe fälschlich auf `unparseable` (v23.7 D3-Bug).
+        if isinstance(val, (int, float)):
             return []
-        return [f"set_state: {attr} value {val!r} not 0..100|max|min"]
+        return [f"set_state: {attr} value {val!r} must be number|max|min"]
     if kind == "number":
         return [] if isinstance(val, (int, float)) else [f"set_state: {attr} value must be number"]
     if kind == "words":
