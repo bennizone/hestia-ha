@@ -14,7 +14,7 @@ from .captag import cap_tag
 from .house import House
 from .tooldefs import all_tool_defs
 
-RENDER_VERSION = "r6"  # r6 = Batch1b Growth-Domains (sound_mode/humidifier/water_heater/remote/vacuum + fan.direction); r5 = Cap-Tags +select/climate-fan+swing (v23.6 Batch1a); r4 = Cap-Tags im [domain]-Token (P1); r3 = Aliase+Beschreibung; r2 = HA-native
+RENDER_VERSION = "r7"  # r7 = Zeitsteuerung (set_timer +at/+do_verb/do_target/do_attribute/do_value, v23.7); r6 = Batch1b Growth-Domains (sound_mode/humidifier/water_heater/remote/vacuum + fan.direction); r5 = Cap-Tags +select/climate-fan+swing (v23.6 Batch1a); r4 = Cap-Tags im [domain]-Token (P1); r3 = Aliase+Beschreibung; r2 = HA-native
 
 INSTRUCTIONS = (
     "Du bist Hestia, der Sprachassistent für dieses Smart Home. Wandle die Nutzer-Anfrage in eine "

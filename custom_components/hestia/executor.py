@@ -25,6 +25,7 @@ from homeassistant.core import HomeAssistant, Context
 from homeassistant.helpers import intent
 
 from . import mapping
+from . import schedule
 from .hestia_cap import cap_attrs
 from .hestia_cap import result as R
 
@@ -506,6 +507,11 @@ async def _deferred(hass, call, exposure: dict, context: Context, device_id=None
         elif verb == "manage_list":
             await _dispatch_list(hass, args, eids, context)
         elif verb == "set_timer":
+            # v23.7 Zeitsteuerung: geplanter Gerätebefehl (do_verb) ODER Lifecycle auf einen eigenen
+            # Schedule → Automation-Backing (schedule.route). None = normaler Timer → Intent-Layer.
+            sres = await schedule.route(hass, args, exposure, context)
+            if sres is not None:
+                return sres
             # add/subtract: duration = Delta (hours/minutes/seconds); cancel/check/pause/resume:
             # kein duration → über name (label) den Timer identifizieren (HA-Slot-Schema).
             slots = _duration_slots(args.get("duration"))

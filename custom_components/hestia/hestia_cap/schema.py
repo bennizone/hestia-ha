@@ -179,6 +179,15 @@ VERBS = {
             "action": {"type": "enum", "values": TIMER_ACTION},
             "duration": {"type": "str"},
             "label": {"type": "str"},
+            # v23.7 Zeitsteuerung (additiv): ein Timer kann optional eine geplante AKTION tragen. Ohne `do_verb`
+            # = normaler Timer (HAs TimerManager). Mit `do_verb` = geplanter Gerätebefehl → getaggte HA-Automation.
+            # `at`=absolut HH:MM (Executor rechnet Triggerzeit — Zeit-Mathe im Executor, nicht im Modell).
+            # do_verb/target/attribute/value flach (Parser koppelt do_verb→do_target, set_state→attr+value).
+            "at": {"type": "str"},
+            "do_verb": {"type": "enum", "values": ("turn_on", "turn_off", "set_state")},
+            "do_target": {"type": "str"},
+            "do_attribute": {"type": "enum", "values": tuple(SETTABLE_ATTRS)},
+            "do_value": {"type": "value", "attr_of": "do_attribute"},
         },
         "required": ["action"],
     },

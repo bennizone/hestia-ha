@@ -81,6 +81,34 @@ def _validate_call(verb: str, args: dict) -> list:
     if verb == "adjust" and "attribute" in args:
         if args["attribute"] not in ADJUSTABLE_ATTRS:
             errs.append(f"adjust: attribute '{args['attribute']}' not adjustable")
+    if verb == "set_timer":
+        errs += _check_set_timer(args)
+    return errs
+
+
+def _check_set_timer(args: dict) -> list:
+    """v23.7 Zeitsteuerung: do_*-Kopplung. do_verb → do_target Pflicht; do_verb=set_state → do_attribute+
+    do_value Pflicht (+ Wert-Typ); do_* nur mit action=set; do_target/attr/value nie ohne do_verb (Waise)."""
+    errs = []
+    do_verb = args.get("do_verb")
+    has_do_child = any(k in args for k in ("do_target", "do_attribute", "do_value"))
+    if do_verb:
+        if args.get("action") != "set":
+            errs.append("set_timer: do_verb nur mit action=set")
+        if "do_target" not in args:
+            errs.append("set_timer: do_verb erfordert do_target")
+        if do_verb == "set_state":
+            if "do_attribute" not in args or "do_value" not in args:
+                errs.append("set_timer: do_verb=set_state erfordert do_attribute+do_value")
+            elif args["do_attribute"] not in SETTABLE_ATTRS:
+                errs.append(f"set_timer: do_attribute '{args['do_attribute']}' not settable")
+            else:
+                errs += [f"do_{e}" for e in _check_set_value(args["do_attribute"], args["do_value"])]
+        else:                                    # turn_on/turn_off tragen kein Attribut/Wert
+            if "do_attribute" in args or "do_value" in args:
+                errs.append(f"set_timer: do_verb={do_verb} trägt kein do_attribute/do_value")
+    elif has_do_child:
+        errs.append("set_timer: do_target/do_attribute/do_value ohne do_verb (Waise)")
     return errs
 
 
