@@ -177,6 +177,7 @@ async def create(hass: HomeAssistant, args: dict, exposure: dict, context: Conte
     await _rewrite(hass, lambda autos: [a for a in autos if a.get("id") != sched_id] + [cfg])
     data["schedules"][sched_id] = {
         "label": label, "do_verb": args["do_verb"], "do_target": args.get("do_target"),
+        "do_attribute": args.get("do_attribute"), "do_value": args.get("do_value"),
         "entity_ids": eids, "at": args.get("at"), "duration": args.get("duration"),
         "trigger": trigger, "created": dt_util.now().isoformat(timespec="seconds")}
     await _save(hass, data)
@@ -211,7 +212,7 @@ async def cancel(hass: HomeAssistant, label: str | None, context: Context) -> di
     await _rewrite(hass, lambda autos: [a for a in autos if a.get("id") != sid])
     data["schedules"].pop(sid, None)
     await _save(hass, data)
-    return R.ok(targets=[meta["label"]], cancelled=True)
+    return R.shape_schedule_cancel(meta["label"])
 
 
 async def reschedule(hass: HomeAssistant, label: str | None, duration: str, subtract: bool,
@@ -237,7 +238,7 @@ async def reschedule(hass: HomeAssistant, label: str | None, duration: str, subt
     await _rewrite(hass, _mut)
     meta["trigger"] = newt
     await _save(hass, data)
-    return R.ok(targets=[meta["label"]], scheduled=True, label=meta["label"])
+    return R.shape_schedule_reschedule(meta["label"])
 
 
 async def set_enabled(hass: HomeAssistant, label: str | None, enabled: bool, context: Context) -> dict:
@@ -288,10 +289,12 @@ async def cleanup(hass: HomeAssistant, context: Context | None = None) -> int:
 
 
 async def live_context(hass: HomeAssistant) -> list[dict]:
-    """Für den Prompt: aktive eigene Schedules (Modell sieht 'Geplant: … um HH:MM (label)')."""
+    """Für den Prompt: aktive eigene Schedules → meta-Dicts, aus denen R.schedule_context_line die
+    'Geplant: <label> <do> um HH:MM'-Zeile baut (train==serve; Modell cancelt/verschiebt via label)."""
     data = await _load(hass)
     return [{"label": m["label"], "trigger": m["trigger"], "do_verb": m["do_verb"],
-             "do_target": m.get("do_target")} for m in data["schedules"].values()]
+             "do_target": m.get("do_target"), "do_attribute": m.get("do_attribute"),
+             "do_value": m.get("do_value")} for m in data["schedules"].values()]
 
 
 async def route(hass: HomeAssistant, args: dict, exposure: dict, context: Context):

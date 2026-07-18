@@ -632,6 +632,54 @@ def shape_schedule(args: dict, targets: list, label=None) -> dict:
     return r
 
 
+def shape_schedule_cancel(label: str) -> dict:
+    """Lifecycle cancel: geplante Aktion gelöscht → {ok,targets:[label],cancelled:True}. GETEILT
+    Generator + Serve schedule.cancel (train==serve). say via with_say (schedule-aware)."""
+    return ok(targets=[label], cancelled=True)
+
+
+def shape_schedule_reschedule(label: str) -> dict:
+    """Lifecycle add/subtract: Triggerzeit verschoben → {ok,targets:[label],scheduled:True,label}.
+    scheduled=True (stabil; die neue Zeit ist relativ = nicht-determ.). GETEILT Generator + Serve."""
+    return ok(targets=[label], scheduled=True, label=label)
+
+
+# ── v23.7 Live-Kontext: „Geplant: …"-Zeile (Cancel-Ref) — GETEILT train==serve ──
+# Das Modell sieht aktive Schedules im Prompt und cancelt/verschiebt gezielt via label. Der Executor
+# baut die meta aus dem Ownership-Store, der Generator aus dem synth. live_schedules-Feld → dieselbe
+# reine Funktion → byte-identische Zeile (wie schedule_context vs. Timer/Medien).
+def _schedule_short_do(meta: dict) -> str:
+    """Terse do-Phrase fürs Listing: 'aus' / 'an' / 'auf 21 Grad' / 'auf 30%'."""
+    v = meta.get("do_verb")
+    if v == "turn_on":
+        return "an"
+    if v == "turn_off":
+        return "aus"
+    if v == "set_state":
+        attr = meta.get("do_attribute")
+        canon, unit, err = set_value_or_error(attr, meta.get("do_value"))
+        if err:
+            return "einstellen"
+        if attr == "color":
+            return f"auf {_color_de(canon)}"
+        if unit == "%":
+            return f"auf {_fmt_num(canon)}%"
+        if unit in ("°C", "K"):
+            return f"auf {_fmt_num(canon)} {'Grad' if unit == '°C' else 'Kelvin'}"
+        return f"auf {canon}"
+    return "geplant"
+
+
+def schedule_context_line(meta: dict) -> str:
+    """Eine „Geplant:"-Zeile: '<label> <do> um <HH:MM>' (Zeit weglassen, wenn kein Trigger bekannt).
+    meta = {label|do_target, do_verb, do_attribute?, do_value?, trigger?}."""
+    label = meta.get("label") or meta.get("do_target") or "Gerät"
+    do = _schedule_short_do(meta)
+    trig = meta.get("trigger")
+    t = str(trig)[:5] if trig else None
+    return f"{label} {do} um {t}" if t else f"{label} {do}"
+
+
 def shape_set_state(names: list, canon, unit, clamped=False) -> dict:
     out = ok(targets=names, value=canon)
     if unit:
@@ -1253,9 +1301,19 @@ def say_for_call(verb: str, args: dict, r: dict):
     if verb == "run_routine":
         return f"{ent} ausgeführt" if ent else None
     if verb == "set_timer":
-        if args.get("do_verb"):                  # v23.7: geplante Aktion (kein reiner Timer)
+        if args.get("do_verb"):                  # v23.7: geplante Aktion anlegen (kein reiner Timer)
             return _schedule_say(args, r)
         act = args.get("action", "set")
+        if r.get("cancelled"):                   # v23.7: Schedule-Lifecycle (Timer-cancel hat targets=[])
+            tgt = (r.get("targets") or [None])[0]
+            return f"Geplante Aktion für {tgt} abgebrochen." if tgt else "Geplante Aktion abgebrochen."
+        if r.get("scheduled") and act in ("add", "subtract"):
+            tgt = (r.get("targets") or [None])[0]
+            return f"Geplante Aktion für {tgt} verschoben." if tgt else "Zeitplan verschoben."
+        if r.get("paused") is not None:
+            tgt = (r.get("targets") or [None])[0]
+            state = "pausiert" if r.get("paused") else "fortgesetzt"
+            return f"Geplante Aktion für {tgt} {state}." if tgt else f"Zeitplan {state}."
         dur = args.get("duration")
         if act == "set":
             return f"Timer über {dur} gestellt" if dur else "Timer gestellt"

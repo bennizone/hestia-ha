@@ -27,8 +27,9 @@ from .const import (DOMAIN, CONF_LLAMA_URL, CONF_LOOP_DEPTH, CONF_DENY,
                     CONF_UNSAFE_MODE, DEFAULT_LOOP_DEPTH, DEFAULT_DENY, DEFAULT_UNSAFE_MODE,
                     LOOP_EXHAUSTED_TEXTS, effective_deny)
 from .hestia_cap import (TOOL_CALL_START, STOP, all_tool_defs, parse, render_prompt,
-                         render_system_content)
+                         render_live_context, render_system_content)
 from .hestia_cap import result as R
+from . import schedule
 from .house_builder import build_exposure, build_house
 from .executor import execute_calls
 from .sentences import async_fire as sentence_fire, get_sentence_store
@@ -132,7 +133,7 @@ class HestiaAgent(conversation.ConversationEntity):
         exposure = build_exposure(self.hass)   # Quelle = Config-Store (Panel-kuratiert)
         house = build_house(self.hass, exposure)
         system_content = render_system_content(house)   # statischer, cachebarer Präfix (ohne Raum/Zeit)
-        live_context = self._live_context(user_input, exposure)   # volatiler Schwanz = 2. System-Message
+        live_context = await self._live_context(user_input, exposure)   # volatiler Schwanz = 2. System-Message
 
         tools = all_tool_defs()
         msgs = [{"role": "system", "content": system_content}]
@@ -194,20 +195,21 @@ class HestiaAgent(conversation.ConversationEntity):
             _LOGGER.debug("reqlog record failed: %s", e)
 
     # ── Live-Kontext-Schwanz (volatil, nach den Tools — prefix-cache-schonend) ──
-    def _live_context(self, user_input, exposure: dict[str, dict]) -> str:
-        """Datum/Tag/Zeit · Raum (device→area; mobil→kein fester Raum) · laufende Timer/Medien.
-        PROTOTYP (v23.1): Format provisorisch; train==serve-Lock folgt im Generator.
+    async def _live_context(self, user_input, exposure: dict[str, dict]) -> str:
+        """Datum/Tag/Zeit · Raum (device→area; mobil→kein fester Raum) · laufende Timer/Medien ·
+        geplante Aktionen. Rendert über den GETEILTEN `render_live_context` (Contract) → train==serve
+        byte-genau (die alte hand-gebaute Version war ein v23.1-Prototyp mit latentem Format-Drift).
 
         Medien-Eligibility (Benni-Lock 2026-07-10, „Nur exposte + opt-out"): ein spielender
         media_player erscheint NUR, wenn er Exposure-Member ist (added AND active — `exposure`
         enthält genau die) UND sein `media_context`-Flag gesetzt ist (Default True). So leakt kein
-        nicht-kuratierter Player, und einzelne lassen sich bewusst ausschließen (bleiben steuerbar)."""
+        nicht-kuratierter Player, und einzelne lassen sich bewusst ausschließen (bleiben steuerbar).
+
+        Schedules (v23.7): eigene aktive Schedules aus schedule.live_context → `schedule_context_line`
+        → „Geplant: <label> <do> um HH:MM" → das Modell kann gezielt canceln/verschieben (via label)."""
         from homeassistant.util import dt as dt_util
         now = dt_util.now()
-        parts = [f"Aktueller Kontext: {_WEEKDAYS_DE[now.weekday()]}, "
-                 f"{now.strftime('%d.%m.%Y')}, {now.strftime('%H:%M')} Uhr."]
         room = self._device_area(user_input.device_id)
-        parts.append(f"Raum: {room}." if room else "Raum: unterwegs, kein fester Raum.")
         active = []
         for st in self.hass.states.async_all("timer"):
             if st.state == "active":
@@ -221,9 +223,10 @@ class HestiaAgent(conversation.ConversationEntity):
             if not rec or not rec.get("media_context", True):   # nicht exposed ODER bewusst ausgeschlossen
                 continue
             active.append(f"Medienwiedergabe {st.attributes.get('friendly_name') or ''}".strip())
-        if active:
-            parts.append("Läuft gerade: " + "; ".join(active) + ".")
-        return " ".join(parts)
+        scheduled = [R.schedule_context_line(m) for m in await schedule.live_context(self.hass)]
+        return render_live_context(_WEEKDAYS_DE[now.weekday()], now.strftime("%d.%m.%Y"),
+                                   now.strftime("%H:%M"), room=room, active=active or None,
+                                   scheduled=scheduled or None)
 
     # ── HTTP: /completion (raw, lokaler Render) ────────────────────────────────
     async def _complete(self, msgs: list[dict], tools: list[dict]) -> str:
