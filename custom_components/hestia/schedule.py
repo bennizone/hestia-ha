@@ -199,9 +199,16 @@ async def _find(hass: HomeAssistant, label: str | None):
             return sid, scheds[sid], data
         return None, None, data
     lab = label.strip().lower()
+    # (H1) EXAKTER Label-Match zuerst — „Lampe" darf NICHT „Stehlampe" treffen (falsches Ziel + train≠serve:
+    # das Gold cancelt exakt `label`, ein Teilstring-First-Match könnte serve-seitig einen anderen Schedule
+    # löschen). Das Modell emittiert den vollen label aus dem „Geplant:"-Listing → exakt matcht immer.
     for sid, m in scheds.items():
-        if lab in (m.get("label") or "").lower():
+        if (m.get("label") or "").lower() == lab:
             return sid, m, data
+    # sonst nur ein EINDEUTIGER Teilstring-Treffer (Voice-Partial); mehrdeutig → kein Match (kein Raten)
+    hits = [(sid, m) for sid, m in scheds.items() if lab in (m.get("label") or "").lower()]
+    if len(hits) == 1:
+        return hits[0][0], hits[0][1], data
     return None, None, data
 
 
@@ -227,9 +234,7 @@ async def reschedule(hass: HomeAssistant, label: str | None, duration: str, subt
     base = dt_util.now().replace(hour=int(meta["trigger"][:2]), minute=int(meta["trigger"][3:5]),
                                  second=int(meta["trigger"][6:8]), microsecond=0)
     newt = (base - delta if subtract else base + delta).strftime("%H:%M:%S")
-    action = _do_action(meta["do_verb"], None, None, meta["entity_ids"]) \
-        if meta["do_verb"] != "set_state" else None
-    # set_state-Reschedule: bestehende Action aus dem yaml behalten (Trigger-only-Patch)
+    # Reschedule ist ein Trigger-only-Patch: die bestehende do-Action im yaml bleibt (auch für set_state).
     def _mut(autos):
         for a in autos:
             if a.get("id") == sid:
@@ -305,15 +310,17 @@ async def route(hass: HomeAssistant, args: dict, exposure: dict, context: Contex
     if args.get("do_verb"):
         return await create(hass, args, exposure, context)
     if action in ("cancel", "add", "subtract", "pause", "resume"):
-        sid, _meta, _data = await _find(hass, args.get("label"))
+        label = args.get("label")
+        if not label:                    # (H2) label-los ist mehrdeutig mit einem laufenden Timer → Timer-
+            return None                  # Pfad (safe default). Schedule-Lifecycle wird IMMER mit label
+        sid, _meta, _data = await _find(hass, label)   # trainiert (aus dem „Geplant:"-Listing) → kein Verlust.
         if not sid:
             return None
         if action == "cancel":
-            return await cancel(hass, args.get("label"), context)
+            return await cancel(hass, label, context)
         if action in ("add", "subtract"):
-            return await reschedule(hass, args.get("label"), args.get("duration"),
-                                    action == "subtract", context)
-        return await set_enabled(hass, args.get("label"), action == "resume", context)
+            return await reschedule(hass, label, args.get("duration"), action == "subtract", context)
+        return await set_enabled(hass, label, action == "resume", context)
     if action == "check":
         if (await _load(hass))["schedules"]:     # eigene Schedules da → listen (sonst Timer-Check)
             return await check(hass, context)
