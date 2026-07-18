@@ -102,11 +102,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.warning("Hestia schedule-cleanup: %s", e)
 
         bucket["_sched_cleanup"] = async_track_time_change(hass, _sched_cleanup, hour=3, minute=17, second=0)
+
+        async def _sched_cleanup_started(_event=None):
+            # Coroutine-Callback → HA awaited sie IM Event-Loop. Ein sync-Lambda hier würde als
+            # nicht-@callback-Job im Executor-Thread laufen → hass.async_create_task aus Fremd-Thread
+            # = RuntimeError (Thread-Safety-Checker, HA ≥2024.5). Direktes await vermeidet das ganz.
+            await _sched_cleanup()
+
         if hass.state == CoreState.running:
-            hass.async_create_task(_sched_cleanup())
+            hass.async_create_task(_sched_cleanup())          # in async_setup_entry → im Loop, thread-safe
         else:
-            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED,
-                                       lambda _e: hass.async_create_task(_sched_cleanup()))
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _sched_cleanup_started)
 
     async_register_ws(hass)
     await async_register_panel(hass)

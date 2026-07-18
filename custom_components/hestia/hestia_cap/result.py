@@ -18,6 +18,7 @@ Fehler-Codes: RESULT_SCHEMA §3 (additiv-only Enum) — hier die einzige Bau-Que
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Protocol, runtime_checkable
@@ -597,6 +598,11 @@ _DEFERRED_DOMAIN = {
 def deferred_result(verb: str, args: dict, exposure: dict) -> tuple:
     """(result, eids) für die deferred Verben. eids = aufgelöste Ziel-Entitäten (Executor-Dispatch)
     oder None. Empirie (v22-Master): media/vacuum-Cases tragen IMMER name/area → kein bare-no_targets."""
+    if verb == "set_timer" and args.get("do_verb"):    # v23.7 Zeitsteuerung: geplante Aktion (kein reiner Timer)
+        eids, err = resolve({"name": args.get("do_target")}, exposure)
+        if err:
+            return err, None
+        return shape_schedule(args, names_of(exposure, eids)), eids
     if verb in _DEFERRED_ABSTRACT:
         return ok(targets=[]), None
     eids, err = resolve(args, exposure)
@@ -608,6 +614,22 @@ def deferred_result(verb: str, args: dict, exposure: dict) -> tuple:
         if not eids:
             return err_no_targets(args.get("name") or args.get("area") or ""), None
     return ok(targets=names_of(exposure, eids)), eids
+
+
+# ── v23.7 Zeitsteuerung: geplante Aktion (set_timer mit do_verb) ──────────────
+# `set_timer` mit `do_verb` = geplanter Gerätebefehl (V23_7_TIME_SCHEDULING_SPIKE.md, Benni-Lock). Der
+# Executor legt eine getaggte HA-Automation an (schedule.py) und rechnet die echte Triggerzeit; die ist
+# bei `duration` (= now+delta) NICHT-deterministisch und darf das asserted Gold NIE speisen. Deshalb ist
+# das train==serve-Result STABIL: `scheduled=True` (bool, kein Zeitwert). Die menschliche Zeit-/Aktions-
+# Wahrheit trägt `say` (aus Args gebaut, s. say_for_call → _schedule_say). label = Cancel-Ref (Args-label
+# oder Ziel-Name), byte-identisch auf beiden Seiten. GETEILT: schedule.create (serve) UND deferred_result
+# (train) rufen dies → kein Gap auf dem Tool-JSON.
+def shape_schedule(args: dict, targets: list, label=None) -> dict:
+    r = ok(targets=list(targets), scheduled=True)
+    lab = label if label is not None else (args.get("label") or (targets[0] if targets else None))
+    if lab:
+        r["label"] = lab
+    return r
 
 
 def shape_set_state(names: list, canon, unit, clamped=False) -> dict:
@@ -1107,6 +1129,70 @@ def fail_say_for_call(verb: str, r: dict):
     return _FAIL_SAY.get(err)
 
 
+# ── v23.7 Zeitsteuerung: say einer geplanten Aktion (train==serve, rein aus Args) ──
+# „Ventilator wird um 15 Uhr ausgeschaltet." Deterministisch aus (at|duration) + do_verb + do_target —
+# unabhängig von der (bei duration nicht-deterministischen) echten Triggerzeit. Zeit-Mathe-frei: der Satz
+# nennt die relative/absolute Zeit wie GESAGT, nicht die berechnete Uhrzeit.
+_DO_VERB_SAY = {"turn_on": "eingeschaltet", "turn_off": "ausgeschaltet"}
+
+
+def _fmt_at_say(at) -> str | None:
+    """'HH:MM' → 'um 15 Uhr' (volle Stunde) bzw. 'um 15:30 Uhr'."""
+    m = re.match(r"^\s*(\d{1,2}):(\d{2})", str(at or ""))
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    return f"um {h} Uhr" if mi == 0 else f"um {h}:{mi:02d} Uhr"
+
+
+def _fmt_dur_say(d) -> str | None:
+    """'1h30min'/'50min'/'90s' → 'in 1 Stunde 30 Minuten' / 'in 50 Minuten' / 'in 90 Sekunden'."""
+    parts = re.findall(r"(\d+)\s*(h|min|s)", str(d or ""))
+    if not parts:
+        return None
+    words = {"h": ("Stunde", "Stunden"), "min": ("Minute", "Minuten"), "s": ("Sekunde", "Sekunden")}
+    chunks = []
+    for num, unit in parts:
+        n = int(num)
+        sg, pl = words[unit]
+        chunks.append(f"{n} {sg if n == 1 else pl}")
+    return "in " + " ".join(chunks)
+
+
+def _schedule_when(args: dict) -> str | None:
+    at = args.get("at")
+    return _fmt_at_say(at) if at else _fmt_dur_say(args.get("duration"))
+
+
+def _schedule_do_phrase(args: dict) -> str:
+    """Aktions-Phrase ohne Ziel/Zeit: 'ausgeschaltet' / 'auf 50 Prozent gestellt' / 'auf blau gestellt'."""
+    verb = args.get("do_verb")
+    if verb in _DO_VERB_SAY:
+        return _DO_VERB_SAY[verb]
+    if verb == "set_state":
+        attr = args.get("do_attribute")
+        canon, unit, err = set_value_or_error(attr, args.get("do_value"))
+        if err:
+            return "eingestellt"
+        if attr == "color":
+            return f"auf {_color_de(canon)} gestellt"
+        if unit == "%":
+            return f"auf {_fmt_num(canon)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}"
+        if unit in ("°C", "K"):
+            return f"auf {_fmt_num(canon)} {_UNIT_WORD[unit]} gestellt"
+        return f"auf {canon} gestellt"
+    return "geplant"
+
+
+def _schedule_say(args: dict, r: dict) -> str | None:
+    """Voller Satz 'Ventilator wird um 15 Uhr ausgeschaltet.' None → unparseable Zeit (Gold trägt es)."""
+    when = _schedule_when(args)
+    if not when:
+        return None
+    ent = _say_entity(r.get("targets") or [], args) or args.get("do_target") or "Das Gerät"
+    return f"{ent} wird {when} {_schedule_do_phrase(args)}."
+
+
 def say_for_call(verb: str, args: dict, r: dict):
     """Deterministische Wahrheits-Phrase aus (Verb, Args, Result-Ziele/Wert). None → kein `say`
     (Klärungs-/Read-Fehler oder Fälle ohne eindeutige Ausführungs-Wahrheit → Gold trägt sie)."""
@@ -1167,6 +1253,8 @@ def say_for_call(verb: str, args: dict, r: dict):
     if verb == "run_routine":
         return f"{ent} ausgeführt" if ent else None
     if verb == "set_timer":
+        if args.get("do_verb"):                  # v23.7: geplante Aktion (kein reiner Timer)
+            return _schedule_say(args, r)
         act = args.get("action", "set")
         dur = args.get("duration")
         if act == "set":

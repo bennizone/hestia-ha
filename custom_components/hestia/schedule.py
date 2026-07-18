@@ -180,7 +180,9 @@ async def create(hass: HomeAssistant, args: dict, exposure: dict, context: Conte
         "entity_ids": eids, "at": args.get("at"), "duration": args.get("duration"),
         "trigger": trigger, "created": dt_util.now().isoformat(timespec="seconds")}
     await _save(hass, data)
-    return R.ok(targets=R.names_of(exposure, eids), scheduled=trigger, label=label)
+    # Result STABIL via geteiltem Shaper (train==serve): scheduled=True (die echte Triggerzeit ist bei
+    # `duration` nicht-deterministisch und darf das asserted Gold nicht speisen); say aus with_say.
+    return R.shape_schedule(args, R.names_of(exposure, eids), label=label)
 
 
 async def _find(hass: HomeAssistant, label: str | None):
@@ -235,7 +237,7 @@ async def reschedule(hass: HomeAssistant, label: str | None, duration: str, subt
     await _rewrite(hass, _mut)
     meta["trigger"] = newt
     await _save(hass, data)
-    return R.ok(targets=[meta["label"]], scheduled=newt)
+    return R.ok(targets=[meta["label"]], scheduled=True, label=meta["label"])
 
 
 async def set_enabled(hass: HomeAssistant, label: str | None, enabled: bool, context: Context) -> dict:
