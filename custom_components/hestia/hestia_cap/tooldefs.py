@@ -32,6 +32,8 @@ PARAM_DESC = {
     "message": "Die Durchsage-Nachricht in natürlicher Sprache.",
     "item": "Der Listen-Eintrag (z.B. 'Milch').",
     "topic": "Optionales Stichwort, wonach gefragt wird (Gerät/Attribut/Fähigkeit).",
+    # v23.9: optionaler Zeit-Slot — wann die Aktion ausgeführt wird. Weglassen = sofort.
+    "when": "Wann ausführen: weglassen oder 'now' = sofort. Für später: Uhrzeit 'HH:MM' oder relativ '1h'/'30min'.",
 }
 
 

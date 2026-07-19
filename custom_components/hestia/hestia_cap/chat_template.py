@@ -30,17 +30,23 @@ def _tojson(tool: dict) -> str:
 
 
 def render_live_context(weekday: str, date: str, time: str, room: str | None = None,
-                        active: list[str] | None = None) -> str:
+                        active: list[str] | None = None,
+                        scheduled: list[str] | None = None) -> str:
     """Der volatile Live-Kontext-Schwanz (als 2. System-Message) — EINE Format-Quelle für
     Generator (Training) UND Addon (Serving), damit train==serve byte-genau ist.
 
     weekday/date/time: Strings (Caller formatiert; Generator simuliert, Addon = echt).
     room=None → mobil/keine feste Area (Modell darf NICHT auf einen Raum defaulten).
-    active: laufende Timer/Medien (Kontext-Stopp) — v23.1-Slot, vorerst meist leer."""
+    active: laufende Timer/Medien (Kontext-Stopp) — v23.1-Slot, vorerst meist leer.
+    scheduled (v23.7): geplante Aktionen (hestia-Schedules) — vorgebaute „<label> <do> um <t>"-Zeilen
+    (result.schedule_context_line), damit das Modell sie sieht und gezielt canceln/verschieben kann
+    (sonst „setzen ja, löschen nein"). Reihenfolge FIX (active vor scheduled) für Byte-Stabilität."""
     parts = [f"Aktueller Kontext: {weekday}, {date}, {time} Uhr."]
     parts.append(f"Raum: {room}." if room else "Raum: unterwegs, kein fester Raum.")
     if active:
         parts.append("Läuft gerade: " + "; ".join(active) + ".")
+    if scheduled:
+        parts.append("Geplant: " + "; ".join(scheduled) + ".")
     return " ".join(parts)
 
 

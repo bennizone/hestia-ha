@@ -1,7 +1,7 @@
 {
   "domain": "hestia",
   "name": "Hestia",
-  "version": "0.1.9",
+  "version": "0.2.0",
   "documentation": "https://github.com/bennizone/hestia-ha",
   "issue_tracker": "https://github.com/bennizone/hestia-ha/issues",
   "codeowners": ["@benni"],

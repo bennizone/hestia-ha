@@ -84,6 +84,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             partial(_async_handle_entity_registry_updated, hass),
         )
 
+    # v23.7 Zeitsteuerung: Schedule-Cleanup (single instance) — deaktivierte/verwaiste eigene one-shot-
+    # Automationen weg. Startup ERST nach HA-Start (sonst sind Automation-States noch nicht da → eigene
+    # Schedules sähen fälschlich verwaist aus) + täglich.
+    if "_sched_cleanup" not in bucket:
+        from . import schedule
+        from homeassistant.core import CoreState
+        from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+        from homeassistant.helpers.event import async_track_time_change
+
+        async def _sched_cleanup(now=None):
+            try:
+                n = await schedule.cleanup(hass)
+                if n:
+                    _LOGGER.info("Hestia: %d abgelaufene Schedule(s) aufgeräumt", n)
+            except Exception as e:  # noqa: BLE001
+                _LOGGER.warning("Hestia schedule-cleanup: %s", e)
+
+        bucket["_sched_cleanup"] = async_track_time_change(hass, _sched_cleanup, hour=3, minute=17, second=0)
+
+        async def _sched_cleanup_started(_event=None):
+            # Coroutine-Callback → HA awaited sie IM Event-Loop. Ein sync-Lambda hier würde als
+            # nicht-@callback-Job im Executor-Thread laufen → hass.async_create_task aus Fremd-Thread
+            # = RuntimeError (Thread-Safety-Checker, HA ≥2024.5). Direktes await vermeidet das ganz.
+            await _sched_cleanup()
+
+        if hass.state == CoreState.running:
+            hass.async_create_task(_sched_cleanup())          # in async_setup_entry → im Loop, thread-safe
+        else:
+            hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _sched_cleanup_started)
+
     async_register_ws(hass)
     await async_register_panel(hass)
 

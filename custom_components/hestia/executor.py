@@ -25,6 +25,8 @@ from homeassistant.core import HomeAssistant, Context
 from homeassistant.helpers import intent
 
 from . import mapping
+from . import schedule
+from .hestia_cap import cap_attrs
 from .hestia_cap import result as R
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,6 +88,14 @@ async def _exec_action(hass: HomeAssistant, verb: str, args: dict, exposure: dic
         return R.err_unsafe(args.get("name") or args.get("domain") or "")
 
     names = R.names_of(exposure, eids)
+
+    if R.when_is_scheduled(args):        # v23.9: when=Zeit → geplant, getaggte Automation statt Sofort-Dispatch
+        try:
+            return await schedule.create_when(hass, verb, args, eids, names, context)
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.warning("Hestia schedule(when) %s failed: %s", verb, e)
+            return R.err_timeout(args.get("name") or verb)
+
     try:
         if verb in ("turn_on", "turn_off"):
             return await _turn(hass, verb, eids, names, exposure, context)
@@ -153,7 +163,8 @@ async def _dispatch_pct(hass, domain, service, param, eids, exposure, canon, con
 async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
     """Ein set_state-Attribut mit EINEM effektiven Wert an HA dispatchen (Service-Map = statischer
     WIE-Teil; das OB entscheidet capabilities_of vorher). pct-Attrs via _dispatch_pct (Limit-Mapping
-    virtuell→real). Nur ATTR_DOMAIN-Attribute erreichen diese Funktion (Guard im Aufrufer)."""
+    virtuell→real). Nur EXECUTABLE_ATTRS-Attribute erreichen diese Funktion (Guard im Aufrufer;
+    `preset` ∈ EXECUTABLE_ATTRS aber ∉ ATTR_DOMAIN — Multi-Domain, hier per Domain gesplittet)."""
     if attr == "brightness":
         await _dispatch_pct(hass, "light", "turn_on", "brightness_pct", eids, exposure, canon, context)
     elif attr == "volume":
@@ -175,6 +186,46 @@ async def _dispatch_attr(hass, attr, canon, eids, exposure, context) -> None:
         await hass.services.async_call("light", "turn_on",
                                        {"entity_id": eids, "color_temp_kelvin": int(canon)},
                                        blocking=True, context=context)
+    elif attr in cap_attrs.BY_ATTR:  # Spec-Tabelle: effect/hvac_mode/preset/swing_mode/fan_mode/option +
+        # Batch1b sound_mode/mode/operation/activity/vacuum_fan_speed (alle über service=(dom,svc,param)):
+        # (disjunkt zu den expliziten pct/color/oscillate/direction/tilt/lock/alarm-Zweigen davor/danach —
+        # eindeutige attr-Namen, kein Overlap). EIN generischer Enum-Dispatch über service=(ha_domain,
+        # svc, param). `canon` ist geräte-echt
+        # Enum-gated (plan_group_set_state). Single-Domain → direkt; Multi-Domain (preset climate/fan,
+        # option select/input_select) → Split über `domains` in FESTER Order (climate→fan / select→input_select).
+        row = cap_attrs.BY_ATTR[attr]
+        _ha_dom, svc, param = row.service
+        if len(row.domains) == 1:
+            await hass.services.async_call(_ha_dom, svc, {"entity_id": eids, param: canon},
+                                           blocking=True, context=context)
+        else:
+            for d in row.domains:
+                de = [e for e in eids if exposure[e]["domain"] == d]
+                if de:
+                    await hass.services.async_call(d, svc, {"entity_id": de, param: canon},
+                                                   blocking=True, context=context)
+    elif attr == "oscillate":      # v23.6 P3-wire: canon ∈ {on,off} (ONOFF-Enum)
+        await hass.services.async_call("fan", "oscillate",
+                                       {"entity_id": eids, "oscillating": canon == "on"},
+                                       blocking=True, context=context)
+    elif attr == "direction":      # v23.6 Batch1b: canon ∈ {forward,reverse} (oscillate-Klasse, kein Tabellen-Attr)
+        await hass.services.async_call("fan", "set_direction",
+                                       {"entity_id": eids, "direction": canon},
+                                       blocking=True, context=context)
+    elif attr == "tilt":           # v23.6 P3-wire: Lamellen-Position. DIREKT (kein Limit-Mapping —
+        await hass.services.async_call("cover", "set_cover_tilt_position",   # `limit` gilt für position,
+                                       {"entity_id": eids, "tilt_position": int(canon)},  # nicht die Tilt-Achse)
+                                       blocking=True, context=context)
+    elif attr == "value":          # v23.7 D5⁺: number/input_number (multi-domain) — je Domain set_value
+        for d in ("number", "input_number"):
+            de = [e for e in eids if exposure[e]["domain"] == d]
+            if de:
+                await hass.services.async_call(d, "set_value", {"entity_id": de, "value": float(canon)},
+                                               blocking=True, context=context)
+    elif attr == "humidity":       # v23.7 D7: humidifier Ziel-Luftfeuchte (canon = geklemmter pct-Wert)
+        await hass.services.async_call("humidifier", "set_humidity",
+                                       {"entity_id": eids, "humidity": int(canon)},
+                                       blocking=True, context=context)
     elif attr == "lock":            # Safety — nur erreichbar wenn unsafe_mode lock aus deny nahm
         await hass.services.async_call("lock", "lock" if canon == "locked" else "unlock",
                                        {"entity_id": eids}, blocking=True, context=context)
@@ -191,8 +242,8 @@ async def _set_state(hass, eids, names, args, exposure, context) -> dict:
     (done/done_clamped/not_capable/invalid_value/partial) train==serve. Dispatch NUR die geplant-
     ausführbaren Ziele, gebündelt nach effektivem (ggf. geräte-echt geklemmtem) Wert."""
     attr, val = args["attribute"], args["value"]
-    if attr not in R.ATTR_DOMAIN:            # deferred set_state-Attribute (hvac_mode/preset/effect/
-        return R.err_not_controllable(attr)  # option/oscillate/…) — HA-Dispatch = P3 → beide not_controllable
+    if attr not in R.EXECUTABLE_ATTRS:       # v23.6 P3-wire + Batch1a: effect/hvac_mode/preset/oscillate/
+        return R.err_not_controllable(attr)  # tilt/swing_mode/fan_mode/option verdrahtet (advertised⊆executable)
     entries = [(e, exposure[e]["llm_name"],
                 R.capabilities_of(exposure[e]["domain"], _state_read(hass, e) or {})) for e in eids]
     res, dispatch = R.plan_group_set_state(attr, val, entries)
@@ -464,6 +515,11 @@ async def _deferred(hass, call, exposure: dict, context: Context, device_id=None
         elif verb == "manage_list":
             await _dispatch_list(hass, args, eids, context)
         elif verb == "set_timer":
+            # v23.7 Zeitsteuerung: geplanter Gerätebefehl (do_verb) ODER Lifecycle auf einen eigenen
+            # Schedule → Automation-Backing (schedule.route). None = normaler Timer → Intent-Layer.
+            sres = await schedule.route(hass, args, exposure, context)
+            if sres is not None:
+                return sres
             # add/subtract: duration = Delta (hours/minutes/seconds); cancel/check/pause/resume:
             # kein duration → über name (label) den Timer identifizieren (HA-Slot-Schema).
             slots = _duration_slots(args.get("duration"))

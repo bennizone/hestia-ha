@@ -19,10 +19,13 @@ class Entity:
     domain: str
     aliases: tuple = ()  # weitere Namen (Resolver-Grounding + ab r3 gerendert „auch: …")
     description: str = ""  # freitext-Zweck-Hinweis (ab r3 gerendert; vage/umschreibende Auflösung)
-    # v23.5 Phase 4 (Cap-Haus): geräte-echtes Capability-Profil (supported_color_modes/hvac_modes/
-    # min_temp/effect_list/preset_modes/options/…) + optionaler synth. `state`. Speist NICHT den
-    # Renderer (Prompt bleibt schlank), sondern NUR den Sim-State-Store (states_from_house) →
-    # capabilities_of → plan_set_state (train==serve). Leer ⇒ caps=None ⇒ konservativer Fallback.
+    # Geräte-echtes Capability-Profil (supported_color_modes/hvac_modes/min_temp/effect_list/
+    # preset_modes/options/supported_features/source_list/…) + optionaler synth. `state`.
+    # Speist (a) den Sim-State-Store (states_from_house → capabilities_of → plan_set_state) UND
+    # (b) ab r4/v23.6-P1 den Renderer (render._entity_token → captag.cap_tag) → Cap-Tags im Prompt.
+    # ⚠ train==serve hängt daran, dass BEIDE Seiten dieselben Attribute füttern: der Generator
+    # backfillt sie (Cap-Profile), das HA-Addon MUSS sie in house_builder aus der Registry-Capability
+    # reichen (P1b-serve-wiring, s. captag.py) — sonst taggt nur train. Leer ⇒ kein Tag + konservativ.
     attributes: dict = field(default_factory=dict)
     state: str = ""
 

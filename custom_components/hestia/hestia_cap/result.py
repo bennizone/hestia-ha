@@ -18,19 +18,40 @@ Fehler-Codes: RESULT_SCHEMA §3 (additiv-only Enum) — hier die einzige Bau-Que
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from datetime import date as _date
 from typing import Protocol, runtime_checkable
 
+from . import cap_attrs
 from .schema import (ADJUSTABLE_ATTRS, ALARM_STATES, COLOR_SYNONYMS, COLOR_WORDS,
-                     HVAC_MODES, LOCK_STATES, ONOFF, SETTABLE_ATTRS)
+                     FAN_DIRECTION, HVAC_MODES, LOCK_STATES, ONOFF, SETTABLE_ATTRS)
 
 # ── Konstanten (aus executor.py gehoben — jetzt Single-Source) ────────────────
-# Attribut → zuständige Domain (set_state/adjust ohne explizites domain-Filter):
+# Attribut → zuständige (EINDEUTIGE) Domain (set_state/adjust ohne explizites domain-Filter):
 # „stell die Heizung auf 20" darf NUR climate treffen, nicht TVs/Lichter/Lüfter.
-ATTR_DOMAIN = {"temperature": "climate", "brightness": "light", "color": "light",
-               "color_temp": "light", "volume": "media_player", "position": "cover",
-               "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel"}
+# Die NICHT-Enum-Attrs stehen explizit (Range/pct/Farbe/Safety/oscillate/direction); die Enum-Listen-Attrs
+# (effect/hvac_mode/swing_mode/fan_mode + Batch1b sound_mode/mode/operation/activity/vacuum_fan_speed,
+# alle single-domain) kommen aus der Spec-Tabelle (cap_attrs.SINGLE_DOMAIN, v23.6). Multi-Domain-Enums
+# (`preset` climate/fan, `option` select/input_select) fehlen BEWUSST in ATTR_DOMAIN (kein Single-Narrowing
+# → „Lüfter auf Schlaf" bleibt möglich), sind aber ausführbar via EXECUTABLE_ATTRS (per-Entität geplant,
+# Dispatch splittet nach Domain). `direction` (Fix-Enum, oscillate-Klasse §10.5) ist explizit → fan.
+_EXPLICIT_NONENUM_DOMAIN = {
+    "temperature": "climate", "brightness": "light", "color": "light",
+    "color_temp": "light", "volume": "media_player", "position": "cover",
+    "fan_speed": "fan", "lock": "lock", "alarm": "alarm_control_panel",
+    "oscillate": "fan", "tilt": "cover", "direction": "fan",
+    "humidity": "humidifier"}   # v23.7 D7: single-domain range → Narrowing (humidifier) + executable
+ATTR_DOMAIN = {**_EXPLICIT_NONENUM_DOMAIN, **cap_attrs.SINGLE_DOMAIN}
+
+# v23.7 D5⁺: `value` (number/input_number) ist MULTI-domain → wie preset/option NICHT in ATTR_DOMAIN
+# (kein Single-Narrowing; Auflösung über Name), aber ausführbar (Dispatch splittet nach Domain).
+_MULTI_DOMAIN_NONENUM = frozenset({"value"})
+
+# Set-State-Attribute, die der Executor DISPATCHEN kann (Executability-Gate, getrennt von der
+# Narrowing-Map ATTR_DOMAIN): alle eindeutigen + die Multi-Domain-Enum-Attrs aus der Tabelle
+# (`preset`, `option`) + Multi-Domain-Numerik (`value`), die per Entität geplant/nach Domain gesplittet werden.
+EXECUTABLE_ATTRS = frozenset(ATTR_DOMAIN) | cap_attrs.MULTI_DOMAIN_ATTRS | _MULTI_DOMAIN_NONENUM
 
 # amount-Enum → Schrittweite (pct-Verben) bzw. Grad-Delta (temperature)
 STEP_PCT = {"a_little": 10, "some": 25, "a_lot": 50}
@@ -326,6 +347,7 @@ _FEAT_BITS = {
     ("cover", "tilt"): 128,         # CoverEntityFeature.SET_TILT_POSITION
     ("media_player", "volume"): 4,  # MediaPlayerEntityFeature.VOLUME_SET
     ("fan", "oscillate"): 2,        # FanEntityFeature.OSCILLATE
+    ("fan", "direction"): 4,        # FanEntityFeature.DIRECTION (v23.6 Batch1b, oscillate-Klasse)
 }
 _COLOR_CAP_MODES = frozenset({"hs", "rgb", "xy", "rgbw", "rgbww"})
 
@@ -387,6 +409,32 @@ def _num_or(x):
     return _num(float(x)) if isinstance(x, (int, float)) else x
 
 
+def _feat_bit_set(attrs: dict, bit: int) -> bool:
+    """supported_features-Bit gesetzt? (feat_bit-Gate für Over-Claim-Schutz, §10.4)."""
+    sf = attrs.get("supported_features")
+    return isinstance(sf, (int, float)) and bool(int(sf) & bit)
+
+
+def _enum_caps_for(s: dict, domain: str, attrs: dict) -> None:
+    """Spec-Tabellen-getriebene Enum-Listen-Caps für die UNIFORMEN Attrs (effect/preset/fan_mode/
+    swing_mode + Batch1b sound_mode/mode/operation/activity/vacuum_fan_speed): truthy-Guard + RAW-Order
+    (§6.5-LOCK S1) + omit⇒not_capable. Zusätzlich feat_bit-Gate, wo gesetzt (sound_mode SELECT_SOUND_MODE:
+    Liste OHNE Bit ⇒ nicht fähig, Over-Claim-Schutz wie src). NUR diese teilen EIN Verhalten (§10.2);
+    hvac_mode (Key-Präsenz + `_ordered`) und option (truthy + any-Fallback) bleiben eigene Zweige im
+    Aufrufer. Mutiert `s` (caps.settable) in-place.
+    ⚠ Die Insert-Reihenfolge in `s` folgt der Tabellen-Order (≠ ALT-Insert-Order) — das ist INERT:
+    kein Konsument iteriert caps.settable roh fürs Result (alle sortieren via `_ATTR_ORDER` oder
+    looken-up). Falls je ein roh-iterierender settable-Konsument entsteht, wird das byte-relevant."""
+    for r in cap_attrs.ENUM_CAP_ATTRS:
+        if r.attr not in cap_attrs.ENUM_CAPS_HELPER_ATTRS or domain not in r.domains:
+            continue
+        if r.feat_bit is not None and not _feat_bit_set(attrs, r.feat_bit):
+            continue                                      # bit-gegatet (sound_mode): kein Bit ⇒ nicht fähig
+        vals = attrs.get(r.list_key)
+        if vals:                                          # None-safe (F1: HA legt Cap-Keys oft mit None an)
+            s[r.attr] = Spec("enum", values=tuple(vals))
+
+
 def capabilities_of(domain: str, state_like: dict) -> Caps:
     """(domain, {"state","attributes"}) → Caps. Geteilt train==serve. Liest NUR Attribute (§1-Quelle
     je Attribut); absente Capability-Introspektion ⇒ konservativ (kind='any'), nie über-ablehnen."""
@@ -396,12 +444,11 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
 
     if domain == "climate":
         s["temperature"] = _range(attrs, "min_temp", "max_temp", "target_temp_step", "°C"); adj.add("temperature")
-        if "hvac_modes" in attrs:
+        if "hvac_modes" in attrs:                         # EXPLIZIT (§10.2): Key-Präsenz + kanonisch `_ordered`
             s["hvac_mode"] = Spec("enum", values=_ordered(attrs["hvac_modes"], HVAC_MODES))
         else:
             s["hvac_mode"] = Spec("any")
-        if "preset_modes" in attrs:
-            s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))
+        _enum_caps_for(s, "climate", attrs)               # Tabelle: preset/fan_mode/swing_mode (truthy+RAW+omit)
 
     elif domain in ("light",):
         modes = attrs.get("supported_color_modes")
@@ -416,19 +463,18 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
             s["color_temp"] = Spec("any")
         elif "color_temp" in modes:
             s["color_temp"] = _range(attrs, "min_color_temp_kelvin", "max_color_temp_kelvin", None, "K"); adj.add("color_temp")
-        el = attrs.get("effect_list")
-        if el:
-            s["effect"] = Spec("enum", values=tuple(el))    # RAW-Order (§6.5-LOCK S1) — WLED-180 → Truncation im Result
+        _enum_caps_for(s, "light", attrs)                   # Tabelle: effect (RAW-Order §6.5-LOCK S1 — WLED-180 → Trunc im Result)
 
     elif domain == "fan":
         # §2-Fallback 0–100 unbedingt (auch ohne SET_SPEED-Bit) — bewusste Design-Entscheidung:
         # beide Seiten claimen es gleich (kein Paritätsproblem), aber preset-only-Fans ohne SET_SPEED
         # täuschen Erfolg vor (accept-and-ignore, §6.9-Q9-Klasse) → am P2-Gate ggf. per Bit gaten.
         s["fan_speed"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("fan_speed")
-        if "preset_modes" in attrs:                          # gerätespez. Liste → RAW-Order (§6.5-LOCK S1:
-            s["preset"] = Spec("enum", values=tuple(attrs["preset_modes"]))   # Cap-Haus kopiert Live-Order verbatim)
+        _enum_caps_for(s, "fan", attrs)                      # Tabelle: preset (RAW; None-safe F1: SET_SPEED-only trägt None)
         if _feat(attrs, "fan", "oscillate"):
             s["oscillate"] = Spec("enum", values=ONOFF)
+        if _feat(attrs, "fan", "direction"):                 # v23.6 Batch1b: Fix-2-Enum (oscillate-Klasse), bit-gegatet
+            s["direction"] = Spec("enum", values=FAN_DIRECTION)
 
     elif domain == "cover":
         if _feat(attrs, "cover", "position"):
@@ -439,15 +485,26 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
     elif domain == "media_player":
         if _feat(attrs, "media_player", "volume"):
             s["volume"] = Spec("range", lo=0, hi=100, unit="%"); adj.add("volume")
+        _enum_caps_for(s, "media_player", attrs)  # v23.6 Batch1b: sound_mode (SELECT_SOUND_MODE-bit-gegated, truthy-Liste)
 
     elif domain in ("select", "input_select"):   # options RAW-Order (§6.5-LOCK S1: Cap-Haus = Live-Order verbatim)
-        s["option"] = Spec("enum", values=tuple(attrs["options"])) if "options" in attrs else Spec("any")
+        s["option"] = Spec("enum", values=tuple(attrs["options"])) if attrs.get("options") else Spec("any")  # None-safe (F1)
 
     elif domain in ("number", "input_number"):
         s["value"] = _range(attrs, "min", "max", "step", None)
 
     elif domain == "humidifier":
         s["humidity"] = _range(attrs, "min_humidity", "max_humidity", None, "%"); adj.add("humidity")
+        _enum_caps_for(s, "humidifier", attrs)   # v23.6 Batch1b: mode (available_modes, truthy+RAW+omit)
+
+    elif domain == "water_heater":               # v23.6 Batch1b: operation (operation_list, truthy+RAW+omit)
+        _enum_caps_for(s, "water_heater", attrs)
+
+    elif domain == "remote":                     # v23.6 Batch1b: activity (activity_list; Setter = remote.turn_on)
+        _enum_caps_for(s, "remote", attrs)
+
+    elif domain == "vacuum":                     # v23.6 Batch1b: vacuum_fan_speed (fan_speed_list, truthy+RAW+omit)
+        _enum_caps_for(s, "vacuum", attrs)
 
     elif domain == "lock":
         s["lock"] = Spec("enum", values=LOCK_STATES)
@@ -461,10 +518,11 @@ def capabilities_of(domain: str, state_like: dict) -> Caps:
 
 def _available_attrs(caps: Caps) -> list:
     """not_capable-`available` = welche Attribute der Assistent DOCH setzen kann. Nur ASSISTANT-
-    setzbare (∩ ATTR_DOMAIN, Benni 2026-07-14): jede angebotene Alternative ist erfüllbar (rev2-
-    Kernwert). Geräte-fähige aber serve-DEFERRED Attrs (effect/tilt/hvac_mode/…) fallen raus, bis
-    P3 sie verdrahtet — dann wachsen sie über ATTR_DOMAIN automatisch rein. Kanonische Reihenfolge."""
-    avail = [a for a in caps.settable if a in ATTR_DOMAIN]
+    ausführbare (∩ EXECUTABLE_ATTRS, Benni 2026-07-14): jede angebotene Alternative ist erfüllbar (rev2-
+    Kernwert). v23.6 P3-wire + Batch1a/1b: effect/hvac_mode/preset/oscillate/tilt/swing_mode/fan_mode/
+    option + sound_mode/mode/operation/activity/vacuum_fan_speed/direction sind executor-verdrahtet →
+    sie erscheinen als Alternativen. Kanon. Reihenfolge (_ATTR_ORDER)."""
+    avail = [a for a in caps.settable if a in EXECUTABLE_ATTRS]
     return sorted(avail, key=lambda a: (_ATTR_ORDER.index(a) if a in _ATTR_ORDER else 99, a))[:_ALLOWED_TRUNC_N]
 
 
@@ -499,6 +557,13 @@ def plan_set_state(attr, value, caps: Caps | None):
     if spec.kind == "enum":                             # (3a) geräte-echte Enum (AC ohne heat, WLED-effect)
         if canon in spec.values:
             return canon, unit, False, None
+        # G1 fuzzy-Resolve (Regen-Strang R6/H3): Case-insensitiv gegen die Geräteliste — Nutzer/Modell
+        # variieren Groß/Klein („Dolby Surround"/„dolby surround"); Case bestimmt KEINE Fähigkeit.
+        # Rückgabe = exakter Geräte-Case (HA-Service-Wert), invalid_value nur bei echt fremdem Wert.
+        _cf = str(canon).lower()
+        _hit = next((v for v in spec.values if str(v).lower() == _cf), None)
+        if _hit is not None:
+            return _hit, unit, False, None
         return None, None, False, err_invalid_value(attr, value, list(spec.values[:_ALLOWED_TRUNC_N]))
     if spec.kind == "range":                            # (3b) Klemmung → done_clamped
         eff, clamped = _clamp(canon, spec)
@@ -533,6 +598,11 @@ _DEFERRED_DOMAIN = {
 def deferred_result(verb: str, args: dict, exposure: dict) -> tuple:
     """(result, eids) für die deferred Verben. eids = aufgelöste Ziel-Entitäten (Executor-Dispatch)
     oder None. Empirie (v22-Master): media/vacuum-Cases tragen IMMER name/area → kein bare-no_targets."""
+    if verb == "set_timer" and args.get("do_verb"):    # v23.7 Zeitsteuerung: geplante Aktion (kein reiner Timer)
+        eids, err = resolve({"name": args.get("do_target")}, exposure)
+        if err:
+            return err, None
+        return shape_schedule(args, names_of(exposure, eids)), eids
     if verb in _DEFERRED_ABSTRACT:
         return ok(targets=[]), None
     eids, err = resolve(args, exposure)
@@ -544,6 +614,89 @@ def deferred_result(verb: str, args: dict, exposure: dict) -> tuple:
         if not eids:
             return err_no_targets(args.get("name") or args.get("area") or ""), None
     return ok(targets=names_of(exposure, eids)), eids
+
+
+# ── v23.7 Zeitsteuerung: geplante Aktion (set_timer mit do_verb) ──────────────
+# `set_timer` mit `do_verb` = geplanter Gerätebefehl (V23_7_TIME_SCHEDULING_SPIKE.md, Benni-Lock). Der
+# Executor legt eine getaggte HA-Automation an (schedule.py) und rechnet die echte Triggerzeit; die ist
+# bei `duration` (= now+delta) NICHT-deterministisch und darf das asserted Gold NIE speisen. Deshalb ist
+# das train==serve-Result STABIL: `scheduled=True` (bool, kein Zeitwert). Die menschliche Zeit-/Aktions-
+# Wahrheit trägt `say` (aus Args gebaut, s. say_for_call → _schedule_say). label = Cancel-Ref (Args-label
+# oder Ziel-Name), byte-identisch auf beiden Seiten. GETEILT: schedule.create (serve) UND deferred_result
+# (train) rufen dies → kein Gap auf dem Tool-JSON.
+def shape_schedule(args: dict, targets: list, label=None) -> dict:
+    r = ok(targets=list(targets), scheduled=True)
+    lab = label if label is not None else (args.get("label") or (targets[0] if targets else None))
+    if lab:
+        r["label"] = lab
+    return r
+
+
+# ── v23.9: Zeitsteuerung via `when` an Aktions-Verben (turn_on/off/set_state/adjust/stop) ──
+# Ein optionaler Slot statt eines separaten set_timer(do_verb) (v238-Kollaps: Verb-Wahl an schwachem Signal).
+# `when` fehlt oder "now" → SOFORT (Verb läuft normal). "HH:MM"/"<N>h/min/s" → GEPLANT (Executor registriert
+# eine Automation, Result STABIL scheduled=True — echte Triggerzeit ist bei Dauer nicht-determ.). GETEILT
+# train==serve: Generator und Serve routen beide über when_is_scheduled + shape_action_scheduled + with_say.
+_ACTION_WHEN_VERBS = frozenset({"turn_on", "turn_off", "set_state", "adjust", "stop"})
+
+
+def when_is_scheduled(args: dict) -> bool:
+    w = args.get("when")
+    return bool(w) and w != "now"
+
+
+def shape_action_scheduled(names: list) -> dict:
+    """Result einer GEPLANTEN Aktions-Ausführung (Aktions-Verb mit when=Zeit). Stabil: scheduled=True."""
+    return ok(targets=list(names), scheduled=True)
+
+
+def shape_schedule_cancel(label: str) -> dict:
+    """Lifecycle cancel: geplante Aktion gelöscht → {ok,targets:[label],cancelled:True}. GETEILT
+    Generator + Serve schedule.cancel (train==serve). say via with_say (schedule-aware)."""
+    return ok(targets=[label], cancelled=True)
+
+
+def shape_schedule_reschedule(label: str) -> dict:
+    """Lifecycle add/subtract: Triggerzeit verschoben → {ok,targets:[label],scheduled:True,label}.
+    scheduled=True (stabil; die neue Zeit ist relativ = nicht-determ.). GETEILT Generator + Serve."""
+    return ok(targets=[label], scheduled=True, label=label)
+
+
+# ── v23.7 Live-Kontext: „Geplant: …"-Zeile (Cancel-Ref) — GETEILT train==serve ──
+# Das Modell sieht aktive Schedules im Prompt und cancelt/verschiebt gezielt via label. Der Executor
+# baut die meta aus dem Ownership-Store, der Generator aus dem synth. live_schedules-Feld → dieselbe
+# reine Funktion → byte-identische Zeile (wie schedule_context vs. Timer/Medien).
+def _schedule_short_do(meta: dict) -> str:
+    """Terse do-Phrase fürs Listing: 'aus' / 'an' / 'auf 21 Grad' / 'auf 30%'.
+    v23.9-Meta trägt verb/name/attribute/value; v23.7-Alt do_verb/do_target — beide lesen."""
+    v = meta.get("verb") or meta.get("do_verb")
+    if v == "turn_on":
+        return "an"
+    if v == "turn_off":
+        return "aus"
+    if v == "set_state":
+        attr = meta.get("attribute") or meta.get("do_attribute")
+        canon, unit, err = set_value_or_error(attr, meta.get("value", meta.get("do_value")))
+        if err:
+            return "einstellen"
+        if attr == "color":
+            return f"auf {_color_de(canon)}"
+        if unit == "%":
+            return f"auf {_fmt_num(canon)}%"
+        if unit in ("°C", "K"):
+            return f"auf {_fmt_num(canon)} {'Grad' if unit == '°C' else 'Kelvin'}"
+        return f"auf {canon}"
+    return "geplant"
+
+
+def schedule_context_line(meta: dict) -> str:
+    """Eine „Geplant:"-Zeile: '<label> <do> um <HH:MM>' (Zeit weglassen, wenn kein Trigger bekannt).
+    meta = {label|name|do_target, verb|do_verb, attribute?, value?, trigger?}."""
+    label = meta.get("label") or meta.get("name") or meta.get("do_target") or "Gerät"
+    do = _schedule_short_do(meta)
+    trig = meta.get("trigger")
+    t = str(trig)[:5] if trig else None
+    return f"{label} {do} um {t}" if t else f"{label} {do}"
 
 
 def shape_set_state(names: list, canon, unit, clamped=False) -> dict:
@@ -918,14 +1071,21 @@ def _say_entity(targets: list, args: dict):
 # ── v23.5 Phase 4 — say-Render der dyn. Executor-Effekte (§6.3, geteilt train==serve) ──
 # Attribut → deutsches Nomen (für not_capable-`available` + not_capable-Verneinung). KANONISCH
 # hier (eine Stelle, §6.5-Zahl-/Wort-Lokalisierung), NICHT in 30 Templates.
+# Nicht-Enum-Attrs explizit; die Enum-Listen-Attrs (effect/hvac_mode/preset/fan_mode/swing_mode/
+# option) kommen aus der Spec-Tabelle (cap_attrs.DE_NOUN/DE_NEG — Genus dort gepflegt). Merge ist
+# order-frei (reine Lookup-Map).
 _ATTR_DE = {"color": "Farbe", "brightness": "Helligkeit", "color_temp": "Weißton",
             "temperature": "Temperatur", "volume": "Lautstärke", "position": "Position",
-            "fan_speed": "Geschwindigkeit", "hvac_mode": "Modus", "preset": "Voreinstellung",
-            "effect": "Effekt", "option": "Einstellung", "tilt": "Neigung", "oscillate": "Schwenken",
-            "humidity": "Luftfeuchte", "value": "Wert", "source": "Quelle"}
+            "fan_speed": "Geschwindigkeit", "tilt": "Neigung", "oscillate": "Schwenken",
+            "humidity": "Luftfeuchte", "value": "Wert", "source": "Quelle",
+            "direction": "Richtung",             # v23.6 Batch1b (oscillate-Klasse, kein Tabellen-Attr)
+            **cap_attrs.DE_NOUN}
 _ATTR_NEG_DE = {"color": "keine Farbe", "brightness": "keine Helligkeit", "color_temp": "keinen Weißton",
                 "temperature": "keine Temperatur", "volume": "keine Lautstärke",
-                "position": "keine Position", "fan_speed": "keine Geschwindigkeit"}
+                "position": "keine Position", "fan_speed": "keine Geschwindigkeit",
+                "oscillate": "kein Schwenken", "tilt": "keine Lamellen-Neigung",
+                "direction": "keine Laufrichtung",
+                **cap_attrs.DE_NEG}
 
 
 def _join_de(items) -> str:
@@ -1036,9 +1196,115 @@ def fail_say_for_call(verb: str, r: dict):
     return _FAIL_SAY.get(err)
 
 
+# ── v23.7 Zeitsteuerung: say einer geplanten Aktion (train==serve, rein aus Args) ──
+# „Ventilator wird um 15 Uhr ausgeschaltet." Deterministisch aus (at|duration) + do_verb + do_target —
+# unabhängig von der (bei duration nicht-deterministischen) echten Triggerzeit. Zeit-Mathe-frei: der Satz
+# nennt die relative/absolute Zeit wie GESAGT, nicht die berechnete Uhrzeit.
+_DO_VERB_SAY = {"turn_on": "eingeschaltet", "turn_off": "ausgeschaltet"}
+_WHEN_AT_SAY = re.compile(r"^\s*\d{1,2}:\d{2}")   # v23.9: HH:MM (absolut) vs Dauer im when-Slot
+
+
+def _fmt_at_say(at) -> str | None:
+    """'HH:MM' → 'um 15 Uhr' (volle Stunde) bzw. 'um 15:30 Uhr'."""
+    m = re.match(r"^\s*(\d{1,2}):(\d{2})", str(at or ""))
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    return f"um {h} Uhr" if mi == 0 else f"um {h}:{mi:02d} Uhr"
+
+
+def _fmt_dur_say(d) -> str | None:
+    """'1h30min'/'50min'/'90s' → 'in 1 Stunde 30 Minuten' / 'in 50 Minuten' / 'in 90 Sekunden'."""
+    parts = re.findall(r"(\d+)\s*(h|min|s)", str(d or ""))
+    if not parts:
+        return None
+    words = {"h": ("Stunde", "Stunden"), "min": ("Minute", "Minuten"), "s": ("Sekunde", "Sekunden")}
+    chunks = []
+    for num, unit in parts:
+        n = int(num)
+        sg, pl = words[unit]
+        chunks.append(f"{n} {sg if n == 1 else pl}")
+    return "in " + " ".join(chunks)
+
+
+def _schedule_when(args: dict) -> str | None:
+    at = args.get("at")
+    return _fmt_at_say(at) if at else _fmt_dur_say(args.get("duration"))
+
+
+def _schedule_do_phrase(args: dict) -> str:
+    """Aktions-Phrase ohne Ziel/Zeit: 'ausgeschaltet' / 'auf 50 Prozent gestellt' / 'auf blau gestellt'."""
+    verb = args.get("do_verb")
+    if verb in _DO_VERB_SAY:
+        return _DO_VERB_SAY[verb]
+    if verb == "set_state":
+        attr = args.get("do_attribute")
+        canon, unit, err = set_value_or_error(attr, args.get("do_value"))
+        if err:
+            return "eingestellt"
+        if attr == "color":
+            return f"auf {_color_de(canon)} gestellt"
+        if unit == "%":
+            return f"auf {_fmt_num(canon)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}"
+        if unit in ("°C", "K"):
+            return f"auf {_fmt_num(canon)} {_UNIT_WORD[unit]} gestellt"
+        return f"auf {canon} gestellt"
+    return "geplant"
+
+
+def _schedule_say(args: dict, r: dict) -> str | None:
+    """Voller Satz 'Ventilator wird um 15 Uhr ausgeschaltet.' None → unparseable Zeit (Gold trägt es)."""
+    when = _schedule_when(args)
+    if not when:
+        return None
+    ent = _say_entity(r.get("targets") or [], args) or args.get("do_target") or "Das Gerät"
+    return f"{ent} wird {when} {_schedule_do_phrase(args)}."
+
+
+def _when_phrase(when: str) -> str | None:
+    """`when`-Wert → menschliche Zeit-Phrase: 'HH:MM' → 'um 15 Uhr', '1h' → 'in 1 Stunde'."""
+    return _fmt_at_say(when) if _WHEN_AT_SAY.match(str(when)) else _fmt_dur_say(when)
+
+
+def _action_do_phrase(verb: str, args: dict) -> str:
+    """Aktions-Phrase ohne Ziel/Zeit für ein geplantes Aktions-Verb: 'ausgeschaltet'/'auf 21 Grad gestellt'."""
+    if verb == "turn_on":
+        return "eingeschaltet"
+    if verb == "turn_off":
+        return "ausgeschaltet"
+    if verb == "stop":
+        return "gestoppt"
+    if verb == "set_state":
+        attr = args.get("attribute")
+        canon, unit, err = set_value_or_error(attr, args.get("value"))
+        if err:
+            return "eingestellt"
+        if attr == "color":
+            return f"auf {_color_de(canon)} gestellt"
+        if unit == "%":
+            return f"auf {_fmt_num(canon)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}"
+        if unit in ("°C", "K"):
+            return f"auf {_fmt_num(canon)} {_UNIT_WORD[unit]} gestellt"
+        return f"auf {canon} gestellt"
+    return "verstellt"      # adjust
+
+
+def _action_when_say(verb: str, args: dict, r: dict) -> str | None:
+    """'Ventilator wird um 15 Uhr ausgeschaltet.' für ein Aktions-Verb mit when=Zeit. None → unparseable."""
+    ph = _when_phrase(args.get("when"))
+    if not ph:
+        return None
+    ent = _say_entity(r.get("targets") or [], args)
+    if not ent:
+        return None
+    return f"{ent} wird {ph} {_action_do_phrase(verb, args)}."
+
+
 def say_for_call(verb: str, args: dict, r: dict):
     """Deterministische Wahrheits-Phrase aus (Verb, Args, Result-Ziele/Wert). None → kein `say`
     (Klärungs-/Read-Fehler oder Fälle ohne eindeutige Ausführungs-Wahrheit → Gold trägt sie)."""
+    if verb in _ACTION_WHEN_VERBS and r.get("scheduled") and when_is_scheduled(args):
+        return _action_when_say(verb, args, r)   # v23.9: geplante Aktion (Aktions-Verb mit when=Zeit)
     if r.get("failed") is not None:              # v23.5 P4: partial (Gruppen-set_state, ok:false + failed)
         return _partial_say(verb, args, r)
     if not r.get("ok"):
@@ -1059,6 +1325,10 @@ def say_for_call(verb: str, args: dict, r: dict):
                     f"{ent} aufgeschlossen" if val == "unlocked" else f"{ent} auf {val} gestellt")
         if attr == "open":
             return f"{ent} geöffnet" if val else f"{ent} geschlossen"
+        if attr == "oscillate":       # v23.6 P3-wire: ONOFF-canon nicht roh zitieren („auf on gestellt")
+            return f"{ent} schwenkt jetzt" if val == "on" else f"{ent} schwenkt nicht mehr"
+        if attr == "direction":       # v23.6 Batch1b: Fix-Enum forward/reverse nicht roh zitieren
+            return f"{ent} läuft jetzt vorwärts" if val == "forward" else f"{ent} läuft jetzt rückwärts"
         if unit == "%":
             return _clamp_suffix(f"{ent} auf {_fmt_num(val)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}",
                                  args, val, r)
@@ -1092,7 +1362,19 @@ def say_for_call(verb: str, args: dict, r: dict):
     if verb == "run_routine":
         return f"{ent} ausgeführt" if ent else None
     if verb == "set_timer":
+        if args.get("do_verb"):                  # v23.7: geplante Aktion anlegen (kein reiner Timer)
+            return _schedule_say(args, r)
         act = args.get("action", "set")
+        if r.get("cancelled"):                   # v23.7: Schedule-Lifecycle (Timer-cancel hat targets=[])
+            tgt = (r.get("targets") or [None])[0]
+            return f"Geplante Aktion für {tgt} abgebrochen." if tgt else "Geplante Aktion abgebrochen."
+        if r.get("scheduled") and act in ("add", "subtract"):
+            tgt = (r.get("targets") or [None])[0]
+            return f"Geplante Aktion für {tgt} verschoben." if tgt else "Zeitplan verschoben."
+        if r.get("paused") is not None:
+            tgt = (r.get("targets") or [None])[0]
+            state = "pausiert" if r.get("paused") else "fortgesetzt"
+            return f"Geplante Aktion für {tgt} {state}." if tgt else f"Zeitplan {state}."
         dur = args.get("duration")
         if act == "set":
             return f"Timer über {dur} gestellt" if dur else "Timer gestellt"

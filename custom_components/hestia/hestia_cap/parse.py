@@ -9,6 +9,7 @@ pythonic-Parse lebt genau EINMAL (kein Reimplement → FM2).
 """
 from __future__ import annotations
 import ast
+import re
 from dataclasses import dataclass, field
 from .schema import (VERBS, TARGET_PARAMS, SETTABLE_ATTRS, ADJUSTABLE_ATTRS,
                      TOOL_CALL_START, TOOL_CALL_END, verb_param_keys)
@@ -81,7 +82,25 @@ def _validate_call(verb: str, args: dict) -> list:
     if verb == "adjust" and "attribute" in args:
         if args["attribute"] not in ADJUSTABLE_ATTRS:
             errs.append(f"adjust: attribute '{args['attribute']}' not adjustable")
+    if "when" in args:                          # v23.9: optionaler Zeit-Slot an Aktions-Verben
+        errs += _check_when(args["when"])
     return errs
+
+
+_WHEN_AT = re.compile(r"^(\d{1,2}):(\d{2})$")
+_WHEN_DUR = re.compile(r"^(\d+\s*(h|min|s))+$")
+
+
+def _check_when(val) -> list:
+    """`when` gültig: "now" (sofort) | "HH:MM" (absolut, 0-23:0-59) | "<N>h/min/s" (relativ). Sonst Fehler."""
+    if val == "now":
+        return []
+    m = _WHEN_AT.match(str(val))
+    if m and 0 <= int(m.group(1)) < 24 and 0 <= int(m.group(2)) < 60:
+        return []
+    if _WHEN_DUR.match(str(val).strip()):
+        return []
+    return [f"when={val!r} ungültig (now|HH:MM|<N>h/min/s)"]
 
 
 def _check_set_value(attr: str, val) -> list:
@@ -90,9 +109,12 @@ def _check_set_value(attr: str, val) -> list:
     if kind == "pct":
         if isinstance(val, str) and val in ("max", "min"):
             return []
-        if isinstance(val, (int, float)) and 0 <= val <= 100:
+        # Über-/Unter-Range NICHT hier ablehnen — plan_set_state klemmt numerische pct-Werte auf
+        # [lo,100] (done_clamped, §6.5), konsistent mit kind=="number". Parse-Reject würde die
+        # Klemm-Logik überspringen → Über-Range-% liefe fälschlich auf `unparseable` (v23.7 D3-Bug).
+        if isinstance(val, (int, float)):
             return []
-        return [f"set_state: {attr} value {val!r} not 0..100|max|min"]
+        return [f"set_state: {attr} value {val!r} must be number|max|min"]
     if kind == "number":
         return [] if isinstance(val, (int, float)) else [f"set_state: {attr} value must be number"]
     if kind == "words":

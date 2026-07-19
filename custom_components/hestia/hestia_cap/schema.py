@@ -11,6 +11,10 @@ Freeze mehr, Benni 2026-07-08); Änderungen bewusst + dokumentiert.
 """
 from __future__ import annotations
 
+# Fixe Wort-Enums leben jetzt im Blatt-Modul cap_attrs (Import-Layering §10.3); hier re-exportiert
+# → result.py-Importe (`from .schema import … HVAC_MODES …`) bleiben byte-neutral.
+from .cap_attrs import HVAC_MODES, PRESETS, LOCK_STATES, ALARM_STATES, ONOFF, FAN_DIRECTION
+
 CAP_VERSION = "cap-v2"
 
 # ── Wire-Wrapper (LFM-nativ, empirisch A2) ────────────────────────────────
@@ -27,12 +31,8 @@ TARGET_PARAMS = {
     "domain": {"type": "str"},   # light|switch|climate|cover|fan|lock|media_player|sensor|...
 }
 
-# ── Wort-Enums für set_state-Attribute (Vollständigkeit via Attribut-Enum, Benni 2026-07-09) ──
-HVAC_MODES = ("heat", "cool", "auto", "off", "dry", "fan_only")
-PRESETS = ("eco", "boost", "away", "comfort", "home", "sleep")     # climate preset_mode (Executor Postel-vergebend)
-LOCK_STATES = ("locked", "unlocked")                              # + Safety-Gate (Zwei-Turn-Confirm)
-ALARM_STATES = ("armed_home", "armed_away", "armed_night", "disarmed")  # + Safety-Gate
-ONOFF = ("on", "off")                                            # oscillate/boolesche Attribute
+# ── Wort-Enums für set_state-Attribute — HVAC_MODES/PRESETS/LOCK_STATES/ALARM_STATES/ONOFF ──
+# (definiert in cap_attrs.py, oben re-exportiert; Vollständigkeit via Attribut-Enum, Benni 2026-07-09)
 
 # ── Attribute + Wert-Domänen ──────────────────────────────────────────────
 # kind steuert Wert-Grammatik (GBNF) + Parser-Validierung + Executor-Mapping.
@@ -40,7 +40,7 @@ ONOFF = ("on", "off")                                            # oscillate/boo
 #   number     : Zahl (z.B. Grad, Helfer-Wert)
 #   colorword  : Farbwort-Enum
 #   colortemp  : "warm" | "cool" | Kelvin-Zahl
-#   words      : geschlossenes Wort-Enum (values-Tupel) — hvac_mode/preset/lock/alarm/oscillate
+#   words      : geschlossenes Wort-Enum (values-Tupel) — hvac_mode/preset/lock/alarm/oscillate/direction
 #   str        : freier String (Effektname, Select-Option) — gerätespezifisch, nicht enumerierbar
 # Universal-Setter (grain-nativ): Fähigkeit skaliert über Attribut-Enum, NICHT über neue Verben.
 SETTABLE_ATTRS = {
@@ -55,12 +55,22 @@ SETTABLE_ATTRS = {
     "color":      {"kind": "colorword"},
     "color_temp": {"kind": "colortemp"},
     "hvac_mode":  {"kind": "words", "values": HVAC_MODES},
-    "preset":     {"kind": "words", "values": PRESETS},
+    "preset":     {"kind": "str"},   # R2 (Regen-Strang): preset_modes sind per-Gerät (wie fan_mode/swing_mode) → freier String + Executor-Resolve (G1); PRESETS bleibt Executor-Postel-Default, NICHT mehr GBNF-Enum
     "lock":       {"kind": "words", "values": LOCK_STATES},
     "alarm":      {"kind": "words", "values": ALARM_STATES},
     "oscillate":  {"kind": "words", "values": ONOFF},
     "effect":     {"kind": "str"},   # Licht-Effekt (freier Name)
     "option":     {"kind": "str"},   # select/input_select-Option (freier Name)
+    "swing_mode": {"kind": "str"},   # climate Schwenk-Modus (geräte-echte swing_modes, caps-gated wie effect)
+    "fan_mode":   {"kind": "str"},   # climate Lüfter-Modus (geräte-echte fan_modes, caps-gated wie effect)
+    # ── v23.6 Batch1b (§10.5): Growth-Domain-Enum-Attribute (freie geräte-echte Liste, caps-gated wie effect) ──
+    "sound_mode": {"kind": "str"},   # media_player Klangprofil (sound_mode_list, SELECT_SOUND_MODE-Bit-gegated)
+    "mode":       {"kind": "str"},   # humidifier Modus (available_modes)
+    "operation":  {"kind": "str"},   # water_heater Betriebsart (operation_list)
+    "activity":   {"kind": "str"},   # remote Aktivität (activity_list, Setter = remote.turn_on)
+    "vacuum_fan_speed": {"kind": "str"},  # vacuum Saugstufe (fan_speed_list; eigener Name vs. fan-pct fan_speed)
+    # fan.direction = Fix-2-Enum (oscillate-Klasse, §10.5): geschlossenes Wort-Enum, bit-gegated (DIRECTION)
+    "direction":  {"kind": "words", "values": FAN_DIRECTION},
 }
 ADJUSTABLE_ATTRS = ("brightness", "volume", "temperature", "position", "fan_speed", "color_temp")
 # GET_ATTRS = Kern-Enum (breit, aber nicht Riesen-Enum). Feinere Discovery via `help`-Verb (Phase 3).
@@ -134,14 +144,21 @@ VACUUM_ACTION = ("start", "return_to_base", "clean_area")  # HassVacuumStart/Ret
 # Jeder Eintrag: target(bool) · params{name: spec} · required[list] · dialog(bool)
 # param-spec: {"type":"str"} | {"type":"enum","values":(...)} | {"type":"value","attr_of":"attribute"}
 #             optional-Flag ⇒ nicht in required.
+# v23.9 (r8) Zeitsteuerung neu: OPTIONALES `when` an den Aktions-Verben statt separatem set_timer(do_verb).
+# Weglassen ODER "now" = SOFORT (Sofort-Fälle byte-identisch zu r7 — kein Kern-Regress). Uhrzeit "HH:MM"
+# oder relativ "1h"/"30min"/"90s" = GEPLANT → Executor registriert eine getaggte Automation. Ein Slot statt
+# einer Verb-Wahl (v238-Kollaps war Verb-Disambiguierung an schwachem Signal). `get_state` bekommt KEIN when.
+_WHEN = {"when": {"type": "str"}}   # optional; "now"|"HH:MM"|"<N>h/min/s"
+
 VERBS = {
-    "turn_on":  {"target": True,  "params": {}, "required": []},
-    "turn_off": {"target": True,  "params": {}, "required": []},
+    "turn_on":  {"target": True,  "params": {**_WHEN}, "required": []},
+    "turn_off": {"target": True,  "params": {**_WHEN}, "required": []},
     "set_state": {
         "target": True,
         "params": {
             "attribute": {"type": "enum", "values": tuple(SETTABLE_ATTRS)},
             "value": {"type": "value", "attr_of": "attribute"},
+            **_WHEN,
         },
         "required": ["attribute", "value"],
     },
@@ -151,6 +168,7 @@ VERBS = {
             "attribute": {"type": "enum", "values": ADJUSTABLE_ATTRS},
             "direction": {"type": "enum", "values": DIRECTION},
             "amount": {"type": "enum", "values": AMOUNT, "or_number": True},
+            **_WHEN,
         },
         "required": ["attribute", "direction"],
     },
@@ -169,6 +187,9 @@ VERBS = {
             "action": {"type": "enum", "values": TIMER_ACTION},
             "duration": {"type": "str"},
             "label": {"type": "str"},
+            # v23.9: set_timer ist wieder REINER Küchen-/Wecker-Timer. Geplante Geräte-Aktionen laufen jetzt
+            # über `when` an den Aktions-Verben (turn_on/set_state/…), nicht mehr über do_verb (v23.7 verworfen —
+            # v238-Kollaps: die set_timer(do_verb=set_state)-Struktur war zu nah an set_state → Über-Triggern).
         },
         "required": ["action"],
     },
@@ -202,7 +223,7 @@ VERBS = {
     },
     "stop": {             # Bewegung anhalten — domain-polymorph (cover.stop_cover | vacuum.stop), spiegelt HassStopMoving
         "target": True,
-        "params": {},
+        "params": {**_WHEN},
         "required": [],
     },
     # ── Discovery (2026-07-09): Model navigiert Fähigkeiten/Attribute selbst statt Riesen-Enum.
