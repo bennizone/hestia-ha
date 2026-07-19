@@ -186,6 +186,36 @@ async def create(hass: HomeAssistant, args: dict, exposure: dict, context: Conte
     return R.shape_schedule(args, R.names_of(exposure, eids), label=label)
 
 
+async def create_when(hass: HomeAssistant, verb: str, args: dict, eids: list, names: list,
+                      context: Context) -> dict:
+    """v23.9: geplante Aktion aus einem Aktions-Verb mit `when`=Zeit → getaggte HA-Automation.
+    `when`="HH:MM" (absolut) oder "1h"/"30min" (relativ). do-Action = das Verb (turn_on/off/set_state).
+    Result STABIL via geteiltem R.shape_action_scheduled (scheduled=True); say aus with_say (train==serve)."""
+    when = str(args.get("when") or "")
+    if re.match(r"^\d{1,2}:\d{2}$", when):
+        trigger = _trigger_time(when, None)          # absolut
+    else:
+        trigger = _trigger_time(None, when)          # relativ (duration)
+    if trigger is None:
+        return R.err_unparseable()
+    action = _do_action(verb, args.get("attribute"), args.get("value"), eids)
+    if action is None:
+        return R.err_not_controllable(args.get("attribute") or verb)
+    data = await _load(hass)
+    data["counter"] += 1
+    sched_id = f"{_ID_PREFIX}{data['counter']}"
+    label = (names[0] if names else None) or args.get("name") or "Aktion"
+    cfg = _automation_cfg(sched_id, label, trigger, action)
+    await _rewrite(hass, lambda autos: [a for a in autos if a.get("id") != sched_id] + [cfg])
+    data["schedules"][sched_id] = {
+        "label": label, "verb": verb, "name": args.get("name"),
+        "attribute": args.get("attribute"), "value": args.get("value"),
+        "entity_ids": eids, "when": when, "trigger": trigger,
+        "created": dt_util.now().isoformat(timespec="seconds")}
+    await _save(hass, data)
+    return R.shape_action_scheduled(names)
+
+
 async def _find(hass: HomeAssistant, label: str | None):
     """(sched_id, meta) des eigenen Schedules per label (case-insensitiv, Teilstring), oder (None,None).
     Genau 1 eigenes → auch ohne label matchbar (häufigster Voice-Fall)."""
@@ -295,11 +325,12 @@ async def cleanup(hass: HomeAssistant, context: Context | None = None) -> int:
 
 async def live_context(hass: HomeAssistant) -> list[dict]:
     """Für den Prompt: aktive eigene Schedules → meta-Dicts, aus denen R.schedule_context_line die
-    'Geplant: <label> <do> um HH:MM'-Zeile baut (train==serve; Modell cancelt/verschiebt via label)."""
+    'Geplant: <label> <do> um HH:MM'-Zeile baut. v23.9-Meta (verb/name/attribute/value) + v23.7-Alt (do_*)."""
     data = await _load(hass)
-    return [{"label": m["label"], "trigger": m["trigger"], "do_verb": m["do_verb"],
-             "do_target": m.get("do_target"), "do_attribute": m.get("do_attribute"),
-             "do_value": m.get("do_value")} for m in data["schedules"].values()]
+    return [{"label": m["label"], "trigger": m["trigger"],
+             "verb": m.get("verb", m.get("do_verb")), "name": m.get("name", m.get("do_target")),
+             "attribute": m.get("attribute", m.get("do_attribute")),
+             "value": m.get("value", m.get("do_value"))} for m in data["schedules"].values()]
 
 
 async def route(hass: HomeAssistant, args: dict, exposure: dict, context: Context):

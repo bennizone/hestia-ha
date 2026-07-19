@@ -32,12 +32,8 @@ PARAM_DESC = {
     "message": "Die Durchsage-Nachricht in natürlicher Sprache.",
     "item": "Der Listen-Eintrag (z.B. 'Milch').",
     "topic": "Optionales Stichwort, wonach gefragt wird (Gerät/Attribut/Fähigkeit).",
-    # v23.7 Zeitsteuerung: geplante Aktion an einen Timer hängen (optional).
-    "at": "Absolute Uhrzeit 'HH:MM' für die geplante Aktion (statt duration); nächstes Vorkommen.",
-    "do_verb": "Geplante Aktion, die zur Zeit/nach der Dauer ausgeführt wird (turn_on/turn_off/set_state).",
-    "do_target": "Ziel-Entität der geplanten Aktion (Eigenname, wortwörtlich).",
-    "do_attribute": "Nur bei do_verb=set_state: die zu setzende Eigenschaft.",
-    "do_value": "Nur bei do_verb=set_state: der Zielwert (passend zu do_attribute).",
+    # v23.9: optionaler Zeit-Slot — wann die Aktion ausgeführt wird. Weglassen = sofort.
+    "when": "Wann ausführen: weglassen oder 'now' = sofort. Für später: Uhrzeit 'HH:MM' oder relativ '1h'/'30min'.",
 }
 
 

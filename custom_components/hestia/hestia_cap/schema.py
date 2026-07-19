@@ -144,14 +144,21 @@ VACUUM_ACTION = ("start", "return_to_base", "clean_area")  # HassVacuumStart/Ret
 # Jeder Eintrag: target(bool) · params{name: spec} · required[list] · dialog(bool)
 # param-spec: {"type":"str"} | {"type":"enum","values":(...)} | {"type":"value","attr_of":"attribute"}
 #             optional-Flag ⇒ nicht in required.
+# v23.9 (r8) Zeitsteuerung neu: OPTIONALES `when` an den Aktions-Verben statt separatem set_timer(do_verb).
+# Weglassen ODER "now" = SOFORT (Sofort-Fälle byte-identisch zu r7 — kein Kern-Regress). Uhrzeit "HH:MM"
+# oder relativ "1h"/"30min"/"90s" = GEPLANT → Executor registriert eine getaggte Automation. Ein Slot statt
+# einer Verb-Wahl (v238-Kollaps war Verb-Disambiguierung an schwachem Signal). `get_state` bekommt KEIN when.
+_WHEN = {"when": {"type": "str"}}   # optional; "now"|"HH:MM"|"<N>h/min/s"
+
 VERBS = {
-    "turn_on":  {"target": True,  "params": {}, "required": []},
-    "turn_off": {"target": True,  "params": {}, "required": []},
+    "turn_on":  {"target": True,  "params": {**_WHEN}, "required": []},
+    "turn_off": {"target": True,  "params": {**_WHEN}, "required": []},
     "set_state": {
         "target": True,
         "params": {
             "attribute": {"type": "enum", "values": tuple(SETTABLE_ATTRS)},
             "value": {"type": "value", "attr_of": "attribute"},
+            **_WHEN,
         },
         "required": ["attribute", "value"],
     },
@@ -161,6 +168,7 @@ VERBS = {
             "attribute": {"type": "enum", "values": ADJUSTABLE_ATTRS},
             "direction": {"type": "enum", "values": DIRECTION},
             "amount": {"type": "enum", "values": AMOUNT, "or_number": True},
+            **_WHEN,
         },
         "required": ["attribute", "direction"],
     },
@@ -179,15 +187,9 @@ VERBS = {
             "action": {"type": "enum", "values": TIMER_ACTION},
             "duration": {"type": "str"},
             "label": {"type": "str"},
-            # v23.7 Zeitsteuerung (additiv): ein Timer kann optional eine geplante AKTION tragen. Ohne `do_verb`
-            # = normaler Timer (HAs TimerManager). Mit `do_verb` = geplanter Gerätebefehl → getaggte HA-Automation.
-            # `at`=absolut HH:MM (Executor rechnet Triggerzeit — Zeit-Mathe im Executor, nicht im Modell).
-            # do_verb/target/attribute/value flach (Parser koppelt do_verb→do_target, set_state→attr+value).
-            "at": {"type": "str"},
-            "do_verb": {"type": "enum", "values": ("turn_on", "turn_off", "set_state")},
-            "do_target": {"type": "str"},
-            "do_attribute": {"type": "enum", "values": tuple(SETTABLE_ATTRS)},
-            "do_value": {"type": "value", "attr_of": "do_attribute"},
+            # v23.9: set_timer ist wieder REINER Küchen-/Wecker-Timer. Geplante Geräte-Aktionen laufen jetzt
+            # über `when` an den Aktions-Verben (turn_on/set_state/…), nicht mehr über do_verb (v23.7 verworfen —
+            # v238-Kollaps: die set_timer(do_verb=set_state)-Struktur war zu nah an set_state → Über-Triggern).
         },
         "required": ["action"],
     },
@@ -221,7 +223,7 @@ VERBS = {
     },
     "stop": {             # Bewegung anhalten — domain-polymorph (cover.stop_cover | vacuum.stop), spiegelt HassStopMoving
         "target": True,
-        "params": {},
+        "params": {**_WHEN},
         "required": [],
     },
     # ── Discovery (2026-07-09): Model navigiert Fähigkeiten/Attribute selbst statt Riesen-Enum.

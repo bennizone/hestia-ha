@@ -88,6 +88,14 @@ async def _exec_action(hass: HomeAssistant, verb: str, args: dict, exposure: dic
         return R.err_unsafe(args.get("name") or args.get("domain") or "")
 
     names = R.names_of(exposure, eids)
+
+    if R.when_is_scheduled(args):        # v23.9: when=Zeit → geplant, getaggte Automation statt Sofort-Dispatch
+        try:
+            return await schedule.create_when(hass, verb, args, eids, names, context)
+        except Exception as e:  # noqa: BLE001
+            _LOGGER.warning("Hestia schedule(when) %s failed: %s", verb, e)
+            return R.err_timeout(args.get("name") or verb)
+
     try:
         if verb in ("turn_on", "turn_off"):
             return await _turn(hass, verb, eids, names, exposure, context)

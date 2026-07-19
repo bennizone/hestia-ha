@@ -9,6 +9,7 @@ pythonic-Parse lebt genau EINMAL (kein Reimplement → FM2).
 """
 from __future__ import annotations
 import ast
+import re
 from dataclasses import dataclass, field
 from .schema import (VERBS, TARGET_PARAMS, SETTABLE_ATTRS, ADJUSTABLE_ATTRS,
                      TOOL_CALL_START, TOOL_CALL_END, verb_param_keys)
@@ -81,35 +82,25 @@ def _validate_call(verb: str, args: dict) -> list:
     if verb == "adjust" and "attribute" in args:
         if args["attribute"] not in ADJUSTABLE_ATTRS:
             errs.append(f"adjust: attribute '{args['attribute']}' not adjustable")
-    if verb == "set_timer":
-        errs += _check_set_timer(args)
+    if "when" in args:                          # v23.9: optionaler Zeit-Slot an Aktions-Verben
+        errs += _check_when(args["when"])
     return errs
 
 
-def _check_set_timer(args: dict) -> list:
-    """v23.7 Zeitsteuerung: do_*-Kopplung. do_verb → do_target Pflicht; do_verb=set_state → do_attribute+
-    do_value Pflicht (+ Wert-Typ); do_* nur mit action=set; do_target/attr/value nie ohne do_verb (Waise)."""
-    errs = []
-    do_verb = args.get("do_verb")
-    has_do_child = any(k in args for k in ("do_target", "do_attribute", "do_value"))
-    if do_verb:
-        if args.get("action") != "set":
-            errs.append("set_timer: do_verb nur mit action=set")
-        if "do_target" not in args:
-            errs.append("set_timer: do_verb erfordert do_target")
-        if do_verb == "set_state":
-            if "do_attribute" not in args or "do_value" not in args:
-                errs.append("set_timer: do_verb=set_state erfordert do_attribute+do_value")
-            elif args["do_attribute"] not in SETTABLE_ATTRS:
-                errs.append(f"set_timer: do_attribute '{args['do_attribute']}' not settable")
-            else:
-                errs += [f"do_{e}" for e in _check_set_value(args["do_attribute"], args["do_value"])]
-        else:                                    # turn_on/turn_off tragen kein Attribut/Wert
-            if "do_attribute" in args or "do_value" in args:
-                errs.append(f"set_timer: do_verb={do_verb} trägt kein do_attribute/do_value")
-    elif has_do_child:
-        errs.append("set_timer: do_target/do_attribute/do_value ohne do_verb (Waise)")
-    return errs
+_WHEN_AT = re.compile(r"^(\d{1,2}):(\d{2})$")
+_WHEN_DUR = re.compile(r"^(\d+\s*(h|min|s))+$")
+
+
+def _check_when(val) -> list:
+    """`when` gültig: "now" (sofort) | "HH:MM" (absolut, 0-23:0-59) | "<N>h/min/s" (relativ). Sonst Fehler."""
+    if val == "now":
+        return []
+    m = _WHEN_AT.match(str(val))
+    if m and 0 <= int(m.group(1)) < 24 and 0 <= int(m.group(2)) < 60:
+        return []
+    if _WHEN_DUR.match(str(val).strip()):
+        return []
+    return [f"when={val!r} ungültig (now|HH:MM|<N>h/min/s)"]
 
 
 def _check_set_value(attr: str, val) -> list:

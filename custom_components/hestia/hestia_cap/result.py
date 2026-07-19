@@ -632,6 +632,24 @@ def shape_schedule(args: dict, targets: list, label=None) -> dict:
     return r
 
 
+# ── v23.9: Zeitsteuerung via `when` an Aktions-Verben (turn_on/off/set_state/adjust/stop) ──
+# Ein optionaler Slot statt eines separaten set_timer(do_verb) (v238-Kollaps: Verb-Wahl an schwachem Signal).
+# `when` fehlt oder "now" → SOFORT (Verb läuft normal). "HH:MM"/"<N>h/min/s" → GEPLANT (Executor registriert
+# eine Automation, Result STABIL scheduled=True — echte Triggerzeit ist bei Dauer nicht-determ.). GETEILT
+# train==serve: Generator und Serve routen beide über when_is_scheduled + shape_action_scheduled + with_say.
+_ACTION_WHEN_VERBS = frozenset({"turn_on", "turn_off", "set_state", "adjust", "stop"})
+
+
+def when_is_scheduled(args: dict) -> bool:
+    w = args.get("when")
+    return bool(w) and w != "now"
+
+
+def shape_action_scheduled(names: list) -> dict:
+    """Result einer GEPLANTEN Aktions-Ausführung (Aktions-Verb mit when=Zeit). Stabil: scheduled=True."""
+    return ok(targets=list(names), scheduled=True)
+
+
 def shape_schedule_cancel(label: str) -> dict:
     """Lifecycle cancel: geplante Aktion gelöscht → {ok,targets:[label],cancelled:True}. GETEILT
     Generator + Serve schedule.cancel (train==serve). say via with_say (schedule-aware)."""
@@ -649,15 +667,16 @@ def shape_schedule_reschedule(label: str) -> dict:
 # baut die meta aus dem Ownership-Store, der Generator aus dem synth. live_schedules-Feld → dieselbe
 # reine Funktion → byte-identische Zeile (wie schedule_context vs. Timer/Medien).
 def _schedule_short_do(meta: dict) -> str:
-    """Terse do-Phrase fürs Listing: 'aus' / 'an' / 'auf 21 Grad' / 'auf 30%'."""
-    v = meta.get("do_verb")
+    """Terse do-Phrase fürs Listing: 'aus' / 'an' / 'auf 21 Grad' / 'auf 30%'.
+    v23.9-Meta trägt verb/name/attribute/value; v23.7-Alt do_verb/do_target — beide lesen."""
+    v = meta.get("verb") or meta.get("do_verb")
     if v == "turn_on":
         return "an"
     if v == "turn_off":
         return "aus"
     if v == "set_state":
-        attr = meta.get("do_attribute")
-        canon, unit, err = set_value_or_error(attr, meta.get("do_value"))
+        attr = meta.get("attribute") or meta.get("do_attribute")
+        canon, unit, err = set_value_or_error(attr, meta.get("value", meta.get("do_value")))
         if err:
             return "einstellen"
         if attr == "color":
@@ -672,8 +691,8 @@ def _schedule_short_do(meta: dict) -> str:
 
 def schedule_context_line(meta: dict) -> str:
     """Eine „Geplant:"-Zeile: '<label> <do> um <HH:MM>' (Zeit weglassen, wenn kein Trigger bekannt).
-    meta = {label|do_target, do_verb, do_attribute?, do_value?, trigger?}."""
-    label = meta.get("label") or meta.get("do_target") or "Gerät"
+    meta = {label|name|do_target, verb|do_verb, attribute?, value?, trigger?}."""
+    label = meta.get("label") or meta.get("name") or meta.get("do_target") or "Gerät"
     do = _schedule_short_do(meta)
     trig = meta.get("trigger")
     t = str(trig)[:5] if trig else None
@@ -1182,6 +1201,7 @@ def fail_say_for_call(verb: str, r: dict):
 # unabhängig von der (bei duration nicht-deterministischen) echten Triggerzeit. Zeit-Mathe-frei: der Satz
 # nennt die relative/absolute Zeit wie GESAGT, nicht die berechnete Uhrzeit.
 _DO_VERB_SAY = {"turn_on": "eingeschaltet", "turn_off": "ausgeschaltet"}
+_WHEN_AT_SAY = re.compile(r"^\s*\d{1,2}:\d{2}")   # v23.9: HH:MM (absolut) vs Dauer im when-Slot
 
 
 def _fmt_at_say(at) -> str | None:
@@ -1241,9 +1261,50 @@ def _schedule_say(args: dict, r: dict) -> str | None:
     return f"{ent} wird {when} {_schedule_do_phrase(args)}."
 
 
+def _when_phrase(when: str) -> str | None:
+    """`when`-Wert → menschliche Zeit-Phrase: 'HH:MM' → 'um 15 Uhr', '1h' → 'in 1 Stunde'."""
+    return _fmt_at_say(when) if _WHEN_AT_SAY.match(str(when)) else _fmt_dur_say(when)
+
+
+def _action_do_phrase(verb: str, args: dict) -> str:
+    """Aktions-Phrase ohne Ziel/Zeit für ein geplantes Aktions-Verb: 'ausgeschaltet'/'auf 21 Grad gestellt'."""
+    if verb == "turn_on":
+        return "eingeschaltet"
+    if verb == "turn_off":
+        return "ausgeschaltet"
+    if verb == "stop":
+        return "gestoppt"
+    if verb == "set_state":
+        attr = args.get("attribute")
+        canon, unit, err = set_value_or_error(attr, args.get("value"))
+        if err:
+            return "eingestellt"
+        if attr == "color":
+            return f"auf {_color_de(canon)} gestellt"
+        if unit == "%":
+            return f"auf {_fmt_num(canon)} Prozent {_SET_PCT_VERB.get(attr, 'gestellt')}"
+        if unit in ("°C", "K"):
+            return f"auf {_fmt_num(canon)} {_UNIT_WORD[unit]} gestellt"
+        return f"auf {canon} gestellt"
+    return "verstellt"      # adjust
+
+
+def _action_when_say(verb: str, args: dict, r: dict) -> str | None:
+    """'Ventilator wird um 15 Uhr ausgeschaltet.' für ein Aktions-Verb mit when=Zeit. None → unparseable."""
+    ph = _when_phrase(args.get("when"))
+    if not ph:
+        return None
+    ent = _say_entity(r.get("targets") or [], args)
+    if not ent:
+        return None
+    return f"{ent} wird {ph} {_action_do_phrase(verb, args)}."
+
+
 def say_for_call(verb: str, args: dict, r: dict):
     """Deterministische Wahrheits-Phrase aus (Verb, Args, Result-Ziele/Wert). None → kein `say`
     (Klärungs-/Read-Fehler oder Fälle ohne eindeutige Ausführungs-Wahrheit → Gold trägt sie)."""
+    if verb in _ACTION_WHEN_VERBS and r.get("scheduled") and when_is_scheduled(args):
+        return _action_when_say(verb, args, r)   # v23.9: geplante Aktion (Aktions-Verb mit when=Zeit)
     if r.get("failed") is not None:              # v23.5 P4: partial (Gruppen-set_state, ok:false + failed)
         return _partial_say(verb, args, r)
     if not r.get("ok"):
