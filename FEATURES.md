@@ -39,4 +39,5 @@ zurückgemeldet — Hestia behauptet nie einen Erfolg, den es nicht gab.
 
 ---
 
-Modell & Gewichte: siehe [HuggingFace](#) · Technik & Architektur für Entwickler/Agenten: [AGENTS.md](AGENTS.md).
+Modell & Gewichte: siehe [HuggingFace](https://huggingface.co/bennizone) · Für Neugierige: lass deinen
+KI-Assistenten via [AGENTS.md](AGENTS.md) das Projekt erklären und dich durch die Installation führen.
