@@ -52,3 +52,29 @@ Modell-Output und strukturiertes Result. Details, Modul-Landkarte und Gotchas: [
 
 - Ein **selbst-gehosteter llama.cpp-Server** (`/completion`) mit kompatiblem fine-getuntem LFM2.5-Modell.
 - Home Assistant (Core / Container / OS) mit HACS.
+
+## Danke — worauf das hier aufbaut 🙏
+
+Hestia ist im Wesentlichen **Klebstoff um die großartige Arbeit anderer**. Ohne diese Projekte gäbe es
+das hier nicht — Dank & Respekt an:
+
+- **[LiquidAI LFM2.5](https://huggingface.co/LiquidAI/LFM2.5-350M)** — das Basis-Modell, das fein-getunt
+  wird. Klein, schnell, tool-fähig. (LFM Open License v1.0.)
+- **[Unsloth](https://github.com/unslothai/unsloth)** — das Fine-Tuning (LoRA) lief darüber. (Apache-2.0.)
+- **[llama.cpp](https://github.com/ggml-org/llama.cpp)** — serviert das Modell lokal & effizient. (MIT.)
+- **[Home Assistant](https://www.home-assistant.io/)** — die Plattform, in die sich Hestia einklinkt.
+- **[HACS](https://hacs.xyz/)** — Distribution der Integration.
+- **[Claude / Claude Code](https://claude.com/claude-code)** (Anthropic) — dieses Projekt wurde
+  „vibe-coded", also im Dialog mit Claude gebaut.
+
+Das eigentliche „Kunststück" (Modell-Verkleinerung, Tool-Kompetenz, Serving-Effizienz) kommt von diesen
+Projekten. Was hier neu ist: der geteilte Cap-Vertrag (train==serve), die native Executor-Integration und
+das deutschsprachige Smart-Home-Fine-Tuning.
+
+## Lizenz
+
+- **Code (dieses Repo):** [MIT](LICENSE) — forke, kopiere, nutze frei.
+- **Modell-Gewichte (HuggingFace):** Derivat von LFM2.5 → **LFM Open License v1.0** (LiquidAIs Lizenz gilt
+  für die Gewichte; siehe Model-Card).
+- **Trainingsdaten:** synthetisch selbst erzeugt, permissiv mit-veröffentlicht (siehe HuggingFace) — falls
+  jemand ein anderes LLM darauf testen will.
