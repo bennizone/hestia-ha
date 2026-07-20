@@ -11,7 +11,7 @@ wird bewusst **nicht** genutzt — Hestia fährt den Loop selbst (volle Kontroll
 
 - 📋 **Was es kann:** → [FEATURES.md](FEATURES.md)
 - 🤖 **Modell-Gewichte (gguf):** → [HuggingFace](https://huggingface.co/bennizone) *(Link wird beim Publish finalisiert)*
-- 🛠️ **Architektur & Setup für Entwickler/Agenten:** → [AGENTS.md](AGENTS.md)
+- 🤝 **Neugierig, aber unsicher?** Sag deinem KI-Assistenten „schau dir dieses Repo an" — [AGENTS.md](AGENTS.md) brieft ihn, dir das Projekt zu erklären, einzuschätzen ob es für dich passt, und dich durch die Installation zu führen.
 
 > **Status:** experimentell / in aktiver Entwicklung — Verhalten und Schnittstellen können sich ändern.
 
