@@ -1,50 +1,54 @@
-# Hestia — Home-Assistant Conversation-Agent (selbst-gehostetes LLM)
+# Hestia 🔥 — selbst-gehosteter Sprachassistent für Home Assistant
 
-Selbst-gehosteter Sprach-/Text-Assistent für Home Assistant. Registriert eine
-**ConversationEntity**, die einen geschlossenen Loop komplett auf eigener Hardware fährt:
-Nutzer-Text → lokales LLM (LFM2.5 via llama.cpp) → Tool-Block → **nativer Executor**
-(`hass.services`) → geerdetes Result → geerdete Antwort.
+**Steuere dein Zuhause per Sprache/Text — komplett lokal, ohne Cloud.** Hestia registriert eine
+Home-Assistant-**ConversationEntity**, die einen geschlossenen Loop auf eigener Hardware fährt:
+Nutzer-Text → lokales fine-getuntes LLM (LFM2.5 via llama.cpp) → Tool-Block → **nativer Executor**
+(`hass.services`) → geerdetes Result → wahrheitsgemäße Antwort.
 
-HAs eingebauter llm-API-Tool-Layer wird bewusst **nicht** genutzt — Hestia führt ihre
-Tools selbst aus (volle Kontrolle über Loop, Grammar und Repair).
+Kein Cloud-Call, keine Daten verlassen dein Netz. Primär **deutschsprachig**. Läuft auf einer kleinen
+eigenen GPU-/CPU-Box (das 350M-Modell ist bewusst klein & schnell). HAs eingebauter llm-Tool-Layer
+wird bewusst **nicht** genutzt — Hestia fährt den Loop selbst (volle Kontrolle über Grammar & Repair).
 
-## Funktionsweise
-
-- **Modell:** fine-getuntes LFM2.5 (350M/1.2B), lokal via **llama.cpp `/completion`** serviert.
-- **train == serve:** Der Prompt wird lokal gerendert (vendored `hestia_cap`, offizielles
-  LFM2.5-Chat-Template, innere Tool-Defs) — das Modell sieht exakt, worauf es trainiert wurde.
-  Nutzt `/completion`, nie `/v1/chat/completions`.
-- **Native Ausführung:** aufgelöste Tool-Calls laufen direkt über `hass.services`; der Loop
-  liefert ein geerdetes, strukturiertes Result, das das Modell wahrhaftig verbalisiert —
-  inkl. ehrlichem „kann ich nicht", Teil-Erfolg und Wert-außerhalb-des-Bereichs.
-- **Distribution:** HACS-Custom-Integration — das Modell läuft remote auf einer eigenen
-  GPU-/CPU-Box, nicht in Home Assistant selbst.
-
-## Voraussetzungen
-
-- Ein **selbst-gehosteter llama.cpp-Server** mit `/completion`-Endpoint, der ein kompatibles
-  fine-getuntes LFM2.5-Modell serviert. Die Endpoint-URL wird in der Integration konfiguriert.
-- Home Assistant (Core / Container / OS) mit HACS.
+- 📋 **Was es kann:** → [FEATURES.md](FEATURES.md)
+- 🤖 **Modell-Gewichte (gguf):** → [HuggingFace](https://huggingface.co/bennizone) *(Link wird beim Publish finalisiert)*
+- 🛠️ **Architektur & Setup für Entwickler/Agenten:** → [AGENTS.md](AGENTS.md)
 
 > **Status:** experimentell / in aktiver Entwicklung — Verhalten und Schnittstellen können sich ändern.
 
-## Installation
+## Highlights
 
-1. Dieses Repository als **HACS-Custom-Repository** hinzufügen (Kategorie: Integration).
-2. **Hestia** über HACS installieren und Home Assistant neu starten.
-3. Integration hinzufügen und die llama.cpp-Endpoint-URL konfigurieren.
-   Die Geräte-Freigabe folgt HAs Standard-Einstellung „Für Assistenten freigeben".
+- **Aktionen, Auskunft, Zeitsteuerung** — an/aus, Werte & Modi setzen, relativ anpassen; Zustände &
+  Aggregate abfragen; „schalt das Licht in 10 Minuten aus" (geplante HA-Automation).
+- **Wahrhaftig** — sagt ehrlich „kann ich nicht", meldet Teil-Erfolge und Wert-außerhalb-des-Bereichs;
+  nie ein falsches „erledigt".
+- **Fähigkeits-bewusst** — kennt, was ein Gerät kann, und klemmt Werte an echte Grenzen.
+- **train == serve** — der Prompt wird lokal exakt so gerendert, wie das Modell trainiert wurde.
 
-Debug-Log bei Bedarf: `logger.set_level {custom_components.hestia: debug}` — protokolliert
-pro Turn den Modell-Output und das strukturierte Result.
+## Funktionsweise (kurz)
 
-## Layout
+- **Modell:** fine-getuntes **LFM2.5 (350M/1.2B)**, lokal via **llama.cpp `/completion`** serviert.
+- **train == serve:** Prompt-Rendering, Tool-Parsing und Result-Shaping kommen aus einem geteilten,
+  vendorten Vertrag (`hestia_cap`) — das Modell sieht zur Laufzeit exakt seinen Trainings-Prompt.
+  Nutzt `/completion`, nie `/v1/chat/completions`.
+- **Native Ausführung:** aufgelöste Tool-Calls laufen direkt über `hass.services`; der Loop liefert ein
+  geerdetes, strukturiertes Result, das das Modell wahrheitsgemäß verbalisiert.
+- **Distribution:** HACS-Custom-Integration — das Modell läuft **remote** auf eigener Box, nicht in HA.
 
-```
-custom_components/hestia/
-  __init__.py      config_flow.py   const.py
-  conversation.py  ← ConversationEntity + Control-Loop
-  executor.py      ← Tool-Call → Entität → hass.services + strukturiertes Result
-  house_builder.py ← HA-Registry → House-Modell + Exposure-Set
-  hestia_cap/      ← vendored Contract (render / parse / serialize / schema + Chat-Template)
-```
+## Schnellstart
+
+1. **Modell servieren** — llama.cpp mit `/completion`-Endpoint + kompatiblem LFM2.5-gguf
+   ([HuggingFace](https://huggingface.co/bennizone)). URL merken (z. B. `http://<box>:8099`).
+2. **Installieren** — dieses Repo als **HACS-Custom-Repository** hinzufügen (Kategorie: Integration),
+   „Hestia" installieren → Home Assistant neu starten. (Alternativ `custom_components/hestia/` manuell
+   nach `<config>/custom_components/` kopieren.)
+3. **Konfigurieren** — Integration „Hestia" hinzufügen, Serve-Endpoint-URL eintragen.
+4. **Exponieren** — im Hestia-Panel Geräte freigeben (explizit), optional Write-Limits & Custom-Sätze.
+5. **Nutzen** — als Conversation-Agent (`conversation.hestia`) in der Voice-Pipeline oder im Chat.
+
+Debug-Log bei Bedarf: `logger.set_level {custom_components.hestia: debug}` — protokolliert pro Turn
+Modell-Output und strukturiertes Result. Details, Modul-Landkarte und Gotchas: [AGENTS.md](AGENTS.md).
+
+## Voraussetzungen
+
+- Ein **selbst-gehosteter llama.cpp-Server** (`/completion`) mit kompatiblem fine-getuntem LFM2.5-Modell.
+- Home Assistant (Core / Container / OS) mit HACS.
