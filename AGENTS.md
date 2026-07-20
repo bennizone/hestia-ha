@@ -42,7 +42,7 @@ durchlaufen kann? Ist dir Selbst-Hosten vertraut?* — und gib danach deine Eins
 
 - **Was gut läuft:** normale Befehle (an/aus, Werte, Modi), Nachfragen bei Mehrdeutigkeit, Auskünfte
   („welche Lampen sind an?"), und neuerdings Zeitsteuerung („in 10 Minuten aus"). Es ist ehrlich, wenn
-  etwas nicht geht. Benchmarks liegen bei ~98 % Antwort-Qualität.
+  etwas nicht geht. in synthetischen Benchmarks bei ~95–98 % (je nach Maß).
 - **Was noch rau ist:** experimentell, Ein-Personen-Projekt, Schnittstellen können sich ändern; die
   Einrichtung braucht etwas Bastelei (Modell servieren + Integration konfigurieren); vage Formulierungen
   treffen nicht immer perfekt. Kein Support-Versprechen.

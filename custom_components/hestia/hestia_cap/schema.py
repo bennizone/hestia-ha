@@ -4,7 +4,7 @@ HA-frei, dependency-frei. DIE eine Quelle für Verben/Enums/Wert-Grammatik.
 Generator + Bench + Addon importieren dies; GBNF, Parser und Tool-Defs werden
 HIERAUS generiert (nie handgepflegt → sonst stille Drift, FM2).
 
-Kontrakt-Referenz: homelab-admin/hestia/v23/LOOP_ARCH_DESIGN.md (Delta cap-v1→cap-v2 §2).
+Kontrakt-Referenz: interner Kontrakt-Spec LOOP_ARCH_DESIGN (Delta cap-v1→cap-v2 §2).
 **cap-v2-Delta:** Dialog-Pseudo-Verben (ask/decline/respond) GESTRICHEN → freier Antworttext
 im Loop (kein Tool-Block). Aktions-Verben unverändert. Prototyp/grüne Wiese (kein sakrosankter
 Freeze mehr, Benni 2026-07-08); Änderungen bewusst + dokumentiert.

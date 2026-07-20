@@ -26,7 +26,7 @@ wird bewusst **nicht** genutzt — Hestia fährt den Loop selbst (volle Kontroll
 
 ## Funktionsweise (kurz)
 
-- **Modell:** fine-getuntes **LFM2.5 (350M/1.2B)**, lokal via **llama.cpp `/completion`** serviert.
+- **Modell:** fine-getuntes **LFM2.5-350M** (klein & schnell), lokal via **llama.cpp `/completion`** serviert.
 - **train == serve:** Prompt-Rendering, Tool-Parsing und Result-Shaping kommen aus einem geteilten,
   vendorten Vertrag (`hestia_cap`) — das Modell sieht zur Laufzeit exakt seinen Trainings-Prompt.
   Nutzt `/completion`, nie `/v1/chat/completions`.

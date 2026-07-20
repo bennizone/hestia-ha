@@ -18,8 +18,9 @@ serviert werden.** Passt das nicht, driftet die Modell-Sicht von der Executor-Re
 ## Das Modell
 
 - **Basis:** LiquidAI **LFM2.5-350M** (Fine-Tune), ~350M Parameter — klein, läuft **lokal**, **deutschsprachig**.
-- **Format & Serving:** **GGUF**, serviert über **llama.cpp** mit OpenAI-kompatiblem Endpoint. Das Addon
-  zeigt per Konfig `llama_url` auf diesen Endpoint. Kein Cloud-Dienst.
+- **Format & Serving:** **GGUF**, serviert über **llama.cpp** am **`/completion`-Endpoint** (bewusst
+  *nicht* `/v1/chat/completions` — der bricht das native Tool-Parsing). Das Addon zeigt per Konfig
+  `llama_url` auf diesen Endpoint und rendert den Prompt selbst. Kein Cloud-Dienst.
 - **Grenzen:** siehe `HESTIA_BRIEFING.md` (geschlossener Kontrakt, keine Datums-/Rechen-Logik im Modell,
   kein offenes NLU — das Deterministische macht der Executor).
 
@@ -27,15 +28,19 @@ serviert werden.** Passt das nicht, driftet die Modell-Sicht von der Executor-Re
 
 | hestia-ha (Addon) | Kontrakt `RENDER_VERSION` | Passendes Modell (Daten-Version) | Modell-Artefakt |
 |---|---|---|---|
-| v0.1.5 – v0.1.9 *(aktuell public)* | **r3** | Hestia **v23.4** (LFM2.5-350M) | siehe „Distribution" |
-| v23.6-Bundle *(in Vorbereitung, noch nicht released)* | **r6** | Hestia **v23.6** (LFM2.5-350M) | *in Vorbereitung* |
+| **v0.2.0** *(aktuell public)* | **r8** | Hestia **v23.9** (LFM2.5-350M, 125k) — Zeitsteuerung/`when`-Slot + Cap-Enums | HuggingFace (s. „Distribution") |
+| v0.1.5 – v0.1.9 *(überholt)* | r3 | Hestia v23.4 (LFM2.5-350M) | — |
+
+*(v0.2.0 bündelt v23.6 Cap-Enums + v23.7/v23.9 Zeitsteuerung; die Zwischen-Kontrakte r4–r7 waren nur
+intern/branch, nie als Addon-Release veröffentlicht — daher der Sprung r3 → r8.)*
 
 **Goldene Regel:** die `RENDER_VERSION` des Modells muss = die `RENDER_VERSION` des Addons sein. Ein Addon-
 Update, das `RENDER_VERSION` ändert, braucht **immer** ein neu trainiertes Modell — nie das eine ohne das
 andere ausrollen.
 
 *(RENDER_VERSION-Historie: r2 = HA-nativ · r3 = Aliase + Beschreibungen · r4 = Cap-Tags im `[domain]`-Token ·
-r5 = +select/climate-fan/swing · r6 = +Growth-Domains sound_mode/humidifier/water_heater/remote/vacuum.)*
+r5 = +select/climate-fan/swing · r6 = +Growth-Domains sound_mode/humidifier/water_heater/remote/vacuum ·
+r7 = Zeitsteuerung (set_timer+do_verb, verworfen) · r8 = Zeitsteuerung via `when`-Slot an Aktions-Verben.)*
 
 ## Distribution / woher man das Modell bekommt
 

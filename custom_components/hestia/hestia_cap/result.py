@@ -12,7 +12,7 @@ Reinheit: HA-frei, dep-frei (nur stdlib `difflib`/`typing`). Alle Funktionen sin
 Service-Calls (`hass.services.async_call`) bleiben serve-seitig; sie speisen das Result NIE —
 die Result-Felder kommen aus `names`, `args` und State-READS.
 
-Kontrakt: homelab-admin/hestia/v23/RESULT_SCHEMA.md (rev2, GELOCKT 2026-07-08).
+Kontrakt: interner Kontrakt-Spec RESULT_SCHEMA (rev2, GELOCKT 2026-07-08).
 Fehler-Codes: RESULT_SCHEMA §3 (additiv-only Enum) — hier die einzige Bau-Quelle.
 """
 from __future__ import annotations

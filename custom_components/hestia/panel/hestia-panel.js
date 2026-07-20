@@ -1150,7 +1150,7 @@ class HestiaPanel extends HTMLElement {
         ${errHtml}
         <div class="field">
           <label>llama.cpp-Endpunkt <span class="hint">— /completion-Basis-URL</span></label>
-          <input class="inp" id="sUrl" value="${esc(s.llama_url)}" placeholder="http://10.83.1.111:8099">
+          <input class="inp" id="sUrl" value="${esc(s.llama_url)}" placeholder="http://192.168.1.50:8099">
         </div>
         <div class="field">
           <label>Loop-Tiefe <span class="hint">— max. Tool-Runden pro Anfrage (1–8)</span></label>
